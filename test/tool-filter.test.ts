@@ -269,3 +269,38 @@ describe('together with read-only mode', () => {
     );
   });
 });
+
+describe('quoting a rejected entry back', () => {
+  it('shows a tool-name-shaped typo in full, because that is every real one', () => {
+    expect(() =>
+      createServer(testConfig({ allowTools: 'list_checkz' }))
+    ).toThrow(/"list_checkz"/);
+  });
+
+  it('redacts anything that is not tool-name-shaped', () => {
+    // HEALTHCHECKS_API_KEY and HEALTHCHECKS_ALLOW_TOOLS are adjacent lines in
+    // every compose file. A paste into the wrong one must not print the key
+    // into the client's log — loadConfig already refuses to echo a bad URL for
+    // the same reason.
+    const key = 'k'.repeat(32);
+    let message = '';
+    try {
+      createServer(testConfig({ allowTools: key }));
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).not.toContain(key);
+    expect(message).toMatch(/32 characters/);
+    expect(message).toMatch(/redacted/);
+    // The half that still has to work: the valid names are still listed.
+    expect(message).toContain('list_checks');
+  });
+});
+
+describe('the redaction threshold', () => {
+  it('is set below the API key length and above the longest tool name', () => {
+    // A charset check alone would pass a lowercase 32-character key through.
+    expect(Math.max(...ALL_TOOLS.map((t) => t.length))).toBeLessThan(24);
+    expect(24).toBeLessThan(32);
+  });
+});

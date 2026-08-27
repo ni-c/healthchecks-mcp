@@ -177,13 +177,13 @@ confirmation token before acting.
 
 Write tools are registered unless `HEALTHCHECKS_READ_ONLY=true`.
 
-| Tool              | Description                                                                     |
-| ----------------- | ------------------------------------------------------------------------------- |
-| `create_check`    | Creates a check. Notifies every integration unless `channels` says otherwise    |
-| `update_check`    | Changes the given fields. `channels` replaces the list rather than adding to it |
-| `pause_check` 👤  | Stops the check expecting pings — and alerting                                  |
-| `resume_check`    | Puts a paused check back into the `new` state                                   |
-| `delete_check` 👤 | Deletes a check. The UUID is not recoverable                                    |
+| Tool              | Description                                                                                               |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `create_check`    | Creates a check. Notifies every integration unless `channels` says otherwise                              |
+| `update_check`    | Changes the given fields. `channels` replaces the list rather than adding to it; an empty list is refused |
+| `pause_check` 👤  | Stops the check expecting pings — and alerting                                                            |
+| `resume_check`    | Puts a paused check back into the `new` state                                                             |
+| `delete_check` 👤 | Deletes a check. The UUID is not recoverable                                                              |
 
 ## Not exposed, on purpose
 

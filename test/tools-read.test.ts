@@ -385,3 +385,48 @@ describe('get_api_key_info', () => {
     expect(result.key_length_ok).toBe(false);
   });
 });
+
+describe('get_api_key_info against an unreachable instance', () => {
+  it('says it could not reach the instance instead of guessing read-write', async () => {
+    // The regression this guards: a blanket catch in the probe turned a DNS
+    // failure, a timeout or an expired certificate into
+    // "accepted: true, kind: read-write" — a confident wrong answer from the
+    // one tool whose whole job is diagnosing why nothing works.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('fetch failed')))
+    );
+    const result = jsonOf(await call(await connect(), 'get_api_key_info'));
+    expect(result.reachable).toBe(false);
+    expect(String(result.kind)).toMatch(/could not be reached/);
+    expect(result.kind).not.toBe('read-write');
+    expect(String(result.error)).toContain('fetch failed');
+  });
+
+  it('does not claim a key works when the key is malformed and nothing was called', async () => {
+    // Same shape, different cause: with a key of the wrong length the client
+    // refuses before any request, which is not evidence that the key is good.
+    stubFetch();
+    const result = jsonOf(
+      await call(await connect({ apiKey: 'short' }), 'get_api_key_info')
+    );
+    expect(result.key_length_ok).toBe(false);
+    expect(result.kind).not.toBe('read-write');
+  });
+});
+
+describe('a 200 that is not JSON', () => {
+  it('is an error, not an empty project', async () => {
+    // A login page in front of a self-hosted instance answers 200 text/html.
+    // "You have 0 checks" is the wrong answer to that.
+    stubFetch({
+      'GET /checks/': {
+        text: '<!DOCTYPE html><html>Sign in</html>',
+        contentType: 'text/html',
+      },
+    });
+    const result = await call(await connect(), 'list_checks');
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/instead of JSON/);
+  });
+});

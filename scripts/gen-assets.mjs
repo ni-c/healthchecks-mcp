@@ -327,6 +327,14 @@ if (check) {
     console.error('docs/public/og.png is missing — run: npm run assets');
     process.exit(1);
   }
+  // A zero-length or half-written file would throw RangeError out of the top
+  // level instead of reaching the message the catch above was written for.
+  if (png.length < 24) {
+    console.error(
+      `docs/public/og.png is ${png.length} bytes — too short to be a PNG. Run: npm run assets`
+    );
+    process.exit(1);
+  }
   const width = png.readUInt32BE(16);
   const height = png.readUInt32BE(20);
   if (width !== OG_WIDTH || height !== OG_HEIGHT) {

@@ -11,6 +11,18 @@ import { HealthchecksApiError, ResponseTooLargeError } from './api.js';
  */
 export const MAX_RESULT_BYTES = 100_000;
 
+/**
+ * Bytes, not characters.
+ *
+ * `String.prototype.length` counts UTF-16 code units, and check names and
+ * descriptions are free text — a list of CJK-named checks is roughly three
+ * bytes per counted unit, so a character budget lets through three times what
+ * it promises.
+ */
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
+
 export function textResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text }] };
 }
@@ -70,11 +82,11 @@ export function budgetedList(
 
   let shown = items;
   let rendered = render(shown);
-  while (rendered.length > MAX_RESULT_BYTES && shown.length > 1) {
+  while (byteLength(rendered) > MAX_RESULT_BYTES && shown.length > 1) {
     shown = shown.slice(0, Math.floor(shown.length / 2));
     rendered = render(shown);
   }
-  if (rendered.length > MAX_RESULT_BYTES && shown.length === 1) {
+  if (byteLength(rendered) > MAX_RESULT_BYTES && shown.length === 1) {
     // A single entry that does not fit cannot be halved any further.
     return textResult(
       render([]).replace(
@@ -84,6 +96,59 @@ export function budgetedList(
     );
   }
   return textResult(rendered);
+}
+
+/**
+ * Renders a single object inside the same budget the list results respect.
+ *
+ * A check is not a list, so there are no entries to drop — but `desc` is free
+ * text of up to ten thousand characters upstream (more on a self-hosted
+ * instance), `normalizeCheck` passes through every field the instance chose to
+ * add, and none of that is bounded by the input schemas. Long string fields are
+ * shortened longest-first until the whole thing fits, each one marked, so the
+ * structure survives and the reader can see what was cut.
+ */
+export function budgetedJson(data: unknown): string {
+  let rendered = JSON.stringify(data, null, 2);
+  if (byteLength(rendered) <= MAX_RESULT_BYTES) return rendered;
+
+  const copy = structuredClone(data) as Record<string, unknown>;
+  const longestStringKey = (): string | undefined =>
+    Object.entries(copy)
+      .filter(
+        (entry): entry is [string, string] =>
+          typeof entry[1] === 'string' && entry[1].length > 200
+      )
+      .sort((a, b) => b[1].length - a[1].length)[0]?.[0];
+
+  for (;;) {
+    const key = longestStringKey();
+    if (key === undefined) break;
+    const value = copy[key] as string;
+    copy[key] =
+      `${value.slice(0, 200)}… (${value.length - 200} more characters omitted)`;
+    rendered = JSON.stringify(copy, null, 2);
+    if (byteLength(rendered) <= MAX_RESULT_BYTES) return rendered;
+  }
+
+  // Nothing string-shaped left to shorten: the object itself is oversized, and
+  // there is no smaller true answer to give.
+  return JSON.stringify({
+    error:
+      'The response exceeds the result size budget even after shortening its text ' +
+      'fields. This is not a normal Healthchecks object — check what the instance returned.',
+    bytes: byteLength(rendered),
+  });
+}
+
+/** {@link budgetedJson}, wrapped as a tool result. */
+export function budgetedJsonResult(data: unknown): CallToolResult {
+  return textResult(budgetedJson(data));
+}
+
+/** {@link budgetedJson}, wrapped with the untrusted-content marker. */
+export function budgetedUntrustedResult(data: unknown): CallToolResult {
+  return untrustedResult(budgetedJson(data));
 }
 
 const MAX_ERROR_BODY_LENGTH = 2000;

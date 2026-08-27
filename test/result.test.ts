@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { HealthchecksApiError, ResponseTooLargeError } from '../src/api.js';
 import {
+  budgetedJson,
   budgetedList,
   errorResult,
   jsonResult,
@@ -150,9 +151,9 @@ describe('run', () => {
 
   it('reports an oversized response as advice rather than a stack', async () => {
     const result = await run(async () => {
-      throw new ResponseTooLargeError('/checks/');
+      throw new ResponseTooLargeError('/checks/', 5 * 1024 * 1024);
     });
-    expect(textOf(result)).toMatch(/tag and slug filters/);
+    expect(textOf(result)).toMatch(/5 MB ceiling/);
   });
 
   it('reports a plain error with the server name in front', async () => {
@@ -167,5 +168,51 @@ describe('run', () => {
       throw 'just a string';
     });
     expect(textOf(result)).toContain('just a string');
+  });
+});
+
+describe('budgetedJson', () => {
+  it('leaves a normal object untouched', () => {
+    expect(JSON.parse(budgetedJson({ name: 'Nightly', grace: 3600 }))).toEqual({
+      name: 'Nightly',
+      grace: 3600,
+    });
+  });
+
+  it('shortens long text fields instead of letting a single check blow the budget', () => {
+    // get_check returns desc verbatim, and normalizeCheck passes through every
+    // field the instance chose to add — none of it bounded by the input schema.
+    const parsed = JSON.parse(
+      budgetedJson({
+        name: 'Nightly',
+        desc: 'd'.repeat(MAX_RESULT_BYTES + 1000),
+        grace: 3600,
+      })
+    );
+    expect(JSON.stringify(parsed).length).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(parsed.name).toBe('Nightly');
+    expect(parsed.grace).toBe(3600);
+    expect(parsed.desc).toMatch(/more characters omitted/);
+  });
+
+  it('measures bytes, not UTF-16 code units', () => {
+    // A CJK-named list is roughly three bytes per counted unit, so a character
+    // budget lets through three times what it promises.
+    const wide = '汉'.repeat(MAX_RESULT_BYTES / 2);
+    const rendered = budgetedJson({ desc: wide });
+    expect(Buffer.byteLength(rendered, 'utf8')).toBeLessThanOrEqual(
+      MAX_RESULT_BYTES
+    );
+  });
+
+  it('caps a budgeted list by bytes as well', () => {
+    const items = Array.from({ length: 200 }, () => ({
+      name: '汉'.repeat(400),
+    }));
+    const rendered = textOf(budgetedList('checks', items));
+    expect(Buffer.byteLength(rendered, 'utf8')).toBeLessThanOrEqual(
+      MAX_RESULT_BYTES
+    );
+    expect(() => JSON.parse(rendered)).not.toThrow();
   });
 });

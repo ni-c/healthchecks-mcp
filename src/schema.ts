@@ -140,11 +140,18 @@ export const tzParam = z
 export const channelsParam = z
   .union([
     z.literal('*').describe('every integration in the project'),
-    z.array(z.string().trim().min(1).max(100)),
+    // `.min(1)`, because an empty array serialises to the empty string, which
+    // Healthchecks reads as "no integrations at all". That silently turns a
+    // monitored check into one that never alerts anyone — the same outcome as
+    // `pause_check`, which this server gates behind a confirmation token.
+    // Clearing every integration is deliberately not offered here; the web UI
+    // does it, in front of someone who can see what it means.
+    z.array(z.string().trim().min(1).max(100)).min(1),
   ])
   .describe(
     'Integrations to notify: "*" for all of them, or a list of integration UUIDs ' +
-      'or exact names (see list_integrations). Replaces the current set, it does not merge.'
+      'or exact names (see list_integrations). Replaces the current set, it does ' +
+      'not merge. An empty list is refused — it would leave the check alerting nobody.'
   );
 
 /**

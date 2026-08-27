@@ -155,7 +155,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
-  config.url = normalizeSiteRoot(rawUrl);
+  // From `parsed`, not `rawUrl`: normalizeSiteRoot only trims slashes and an
+  // API suffix, so a query or fragment would survive it and end up glued in
+  // front of /api/v3 on every request.
+  config.url = normalizeSiteRoot(`${parsed.origin}${parsed.pathname}`);
   config.usingDefaultUrl = false;
   return config;
 }

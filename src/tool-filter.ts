@@ -56,7 +56,7 @@ function expand(entry: string, variable: string): string[] {
   if (star !== -1) {
     if (star !== entry.length - 1) {
       throw new ToolFilterError(
-        `${variable}: "${entry}" is not a valid entry — a pattern is a prefix ` +
+        `${variable}: ${describeEntry(entry)} is not a valid entry — a pattern is a prefix ` +
           'followed by a single trailing "*", for example "list_*". Everything ' +
           'else is an exact tool name.'
       );
@@ -70,6 +70,28 @@ function expand(entry: string, variable: string): string[] {
 /** The full catalogue, for the "these are the names that exist" half of an error. */
 function catalogueList(): string {
   return [...ALL_TOOLS].sort().join(', ');
+}
+
+/**
+ * How a rejected entry is quoted back.
+ *
+ * `HEALTHCHECKS_API_KEY` and `HEALTHCHECKS_ALLOW_TOOLS` are adjacent lines in
+ * every compose file and in the README table, and a paste into the wrong one is
+ * a mistake people make. Echoing the value would then print the key into the
+ * client's log — the same reason `loadConfig` never echoes a rejected URL.
+ *
+ * Anything tool-name-shaped is shown in full, because that is every real typo
+ * and the message is useless without it. Anything else is described rather than
+ * quoted; the catalogue list that follows already says what a valid entry is.
+ */
+function describeEntry(entry: string): string {
+  // 24 characters is the deciding number: the longest real tool name is
+  // `get_api_key_info` at 16, and a Healthchecks API key is exactly 32. A
+  // charset check alone would pass a lowercase 32-character key straight
+  // through, which is the case this exists for.
+  return /^[a-z0-9_*]{1,24}$/.test(entry)
+    ? `"${entry}"`
+    : `an entry of ${entry.length} characters that is not tool-name-shaped (redacted — if you pasted an API key here, it is not in this log)`;
 }
 
 /**
@@ -122,7 +144,7 @@ export function buildToolFilter(config: {
       const matches = expand(entry, 'HEALTHCHECKS_ALLOW_TOOLS');
       if (matches.length === 0) {
         throw new ToolFilterError(
-          `HEALTHCHECKS_ALLOW_TOOLS: no tool matches "${entry}". ` +
+          `HEALTHCHECKS_ALLOW_TOOLS: no tool matches ${describeEntry(entry)}. ` +
             `Valid tools: ${catalogueList()}. "${PRESET}" selects the curated preset.`
         );
       }
@@ -132,7 +154,7 @@ export function buildToolFilter(config: {
         if (entry.endsWith('*')) {
           // A pattern is a template, not a claim about one tool: warn, continue.
           console.error(
-            `healthchecks-mcp: HEALTHCHECKS_ALLOW_TOOLS: "${entry}" matches only write ` +
+            `healthchecks-mcp: HEALTHCHECKS_ALLOW_TOOLS: ${describeEntry(entry)} matches only write ` +
               'tools, which HEALTHCHECKS_READ_ONLY suppresses — it contributes nothing.'
           );
           suppressedByReadOnly = true;
@@ -140,7 +162,7 @@ export function buildToolFilter(config: {
         }
         // An exact name, though, was typed by someone who believes it is exposed.
         throw new ToolFilterError(
-          `HEALTHCHECKS_ALLOW_TOOLS: "${entry}" is a write tool, but HEALTHCHECKS_READ_ONLY ` +
+          `HEALTHCHECKS_ALLOW_TOOLS: ${describeEntry(entry)} is a write tool, but HEALTHCHECKS_READ_ONLY ` +
             'is set — it is never registered. Remove it from HEALTHCHECKS_ALLOW_TOOLS, ' +
             `or unset HEALTHCHECKS_READ_ONLY. Available in read-only mode: ${[...READ_TOOLS].sort().join(', ')}.`
         );
@@ -156,7 +178,7 @@ export function buildToolFilter(config: {
     const matches = expand(entry, 'HEALTHCHECKS_DENY_TOOLS');
     if (matches.length === 0) {
       throw new ToolFilterError(
-        `HEALTHCHECKS_DENY_TOOLS: no tool matches "${entry}". Valid tools: ${catalogueList()}.`
+        `HEALTHCHECKS_DENY_TOOLS: no tool matches ${describeEntry(entry)}. Valid tools: ${catalogueList()}.`
       );
     }
     for (const tool of matches) selected.delete(tool);

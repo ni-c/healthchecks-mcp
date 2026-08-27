@@ -8,6 +8,7 @@ import {
   MAX_RESPONSE_BYTES,
   query,
   ResponseTooLargeError,
+  UnexpectedContentTypeError,
   type RawResponse,
 } from '../src/api.js';
 import { API, RW_KEY, stubFetch, testConfig } from './harness.js';
@@ -63,6 +64,7 @@ describe('request shape', () => {
     const stub = stubFetch({ 'GET /status/': { text: 'OK' } });
     await new HealthchecksApi(testConfig()).get('/status/', {
       anonymous: true,
+      raw: true,
     });
     expect(stub.calls[0]?.headers['x-api-key']).toBeUndefined();
   });
@@ -81,8 +83,9 @@ describe('missing or malformed credentials', () => {
     await expect(
       new HealthchecksApi(testConfig({ apiKey: undefined })).get('/status/', {
         anonymous: true,
+        raw: true,
       })
-    ).resolves.toBe('OK');
+    ).resolves.toMatchObject({ body: 'OK' });
   });
 
   it('refuses a key of the wrong length before spending a request on it', async () => {
@@ -95,17 +98,51 @@ describe('missing or malformed credentials', () => {
 });
 
 describe('responses', () => {
-  it('parses JSON and passes plain text through', async () => {
+  it('parses JSON', async () => {
     stubFetch({ 'GET /checks/': { json: { checks: [1] } } });
     await expect(
       new HealthchecksApi(testConfig()).get('/checks/')
     ).resolves.toEqual({
       checks: [1],
     });
+  });
+
+  it('hands back plain text only where the caller asked for it raw', async () => {
     stubFetch({ 'GET /status/': { text: 'OK' } });
     await expect(
-      new HealthchecksApi(testConfig()).get('/status/', { anonymous: true })
-    ).resolves.toBe('OK');
+      new HealthchecksApi(testConfig()).get('/status/', {
+        anonymous: true,
+        raw: true,
+      })
+    ).resolves.toMatchObject({ body: 'OK' });
+  });
+
+  it('refuses a 200 that is not JSON instead of passing the body on', async () => {
+    // An SSO portal, a captive proxy or a login page in front of the instance
+    // answers 200 text/html. Returning that body would reach listOf(), find no
+    // array, and report an empty project — an error replaced by a plausible
+    // wrong answer, and the likeliest misconfiguration for a self-hosted setup.
+    stubFetch({
+      'GET /checks/': {
+        text: '<!DOCTYPE html><html>Sign in</html>',
+        contentType: 'text/html',
+      },
+    });
+    await expect(
+      new HealthchecksApi(testConfig()).get('/checks/')
+    ).rejects.toThrow(UnexpectedContentTypeError);
+    await expect(
+      new HealthchecksApi(testConfig()).get('/checks/')
+    ).rejects.toThrow(/SSO portal|captive proxy|login page/);
+  });
+
+  it('refuses a JSON content type whose body does not parse', async () => {
+    stubFetch({
+      'GET /checks/': { text: 'not json', contentType: 'application/json' },
+    });
+    await expect(
+      new HealthchecksApi(testConfig()).get('/checks/')
+    ).rejects.toThrow(UnexpectedContentTypeError);
   });
 
   it('turns a non-2xx into an error carrying the status and the body', async () => {
@@ -179,6 +216,52 @@ describe('the response size ceiling', () => {
     )) as RawResponse;
     expect(raw.truncated).toBe(true);
     expect(raw.body).toHaveLength(2048);
+  });
+
+  it('truncates rather than refuses when the caller reads raw, even with a declared length', async () => {
+    // get_ping_body promises "truncated at 64 KB". Healthchecks serves ping
+    // bodies with a content-length, so without this the promise held only for
+    // chunked responses — a contract that depended on the transfer encoding.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('x'.repeat(4096), {
+            headers: {
+              'content-type': 'text/plain',
+              'content-length': '4096',
+            },
+          })
+      )
+    );
+    const raw = (await new HealthchecksApi(testConfig()).get(
+      '/checks/x/pings/1/body',
+      {
+        raw: true,
+        maxBytes: 1024,
+      }
+    )) as RawResponse;
+    expect(raw.truncated).toBe(true);
+    expect(raw.body).toHaveLength(1024);
+  });
+
+  it('names the limit that actually applied, not the global one', async () => {
+    // "exceeds 5 MB" for a 6 KB status response is an error nobody believes.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('{}', {
+            headers: {
+              'content-type': 'application/json',
+              'content-length': '6000',
+            },
+          })
+      )
+    );
+    await expect(
+      new HealthchecksApi(testConfig()).get('/status/', { maxBytes: 4096 })
+    ).rejects.toThrow(/4 KB ceiling/);
   });
 
   it('refuses to hand back a JSON document it had to cut', async () => {

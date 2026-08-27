@@ -171,6 +171,10 @@ Three things the API does that this tool does not simply forward:
 - **`channels` defaults to `*`.** The API's own default is *no* integrations,
   which produces a check that looks healthy, reports correctly and never tells
   anyone when it stops. The result says which default was applied.
+- **An empty `channels` list is refused.** It serialises to the empty string,
+  which the API reads as "no integrations" — the same silent loss of alerting
+  that `pause_check` is gated for. Clearing every integration is done in the
+  web UI, in front of someone who can see what it means.
 - **`unique` turns a create into an update.** When it matches, the API returns
   200 and the modified existing check instead of 201. The result says so.
 

@@ -38,15 +38,39 @@ export class HealthchecksApiError extends Error {
   }
 }
 
-/** Thrown when a response is larger than {@link MAX_RESPONSE_BYTES}. */
+/**
+ * Thrown when a response is larger than the ceiling that applied to it.
+ *
+ * The limit is a parameter rather than {@link MAX_RESPONSE_BYTES}, because
+ * callers override it — 64 KB for a ping body, 4 KB for the status probe — and
+ * an error announcing "exceeds 5 MB" for a 6 KB response is one nobody believes.
+ */
 export class ResponseTooLargeError extends Error {
-  constructor(path: string) {
+  constructor(path: string, limit: number) {
     super(
-      `the Healthchecks response for ${path} exceeds ${Math.round(
-        MAX_RESPONSE_BYTES / 1024 / 1024
-      )} MB and was not read. Narrow the request — list_checks accepts tag and slug filters.`
+      `the Healthchecks response for ${path} exceeds the ${formatLimit(limit)} ` +
+        'ceiling and was not read.'
     );
     this.name = 'ResponseTooLargeError';
+  }
+}
+
+function formatLimit(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${Math.round(bytes / 1024 / 1024)} MB`
+    : `${Math.round(bytes / 1024)} KB`;
+}
+
+/** Thrown when a response that has to be JSON is not. */
+export class UnexpectedContentTypeError extends Error {
+  constructor(path: string, contentType: string) {
+    super(
+      `Healthchecks answered ${path} with "${contentType || 'no content type'}" ` +
+        'instead of JSON. A 200 that is not JSON usually means something in front ' +
+        'of the instance answered instead of the API — an SSO portal, a captive ' +
+        'proxy or a login page. Check HEALTHCHECKS_URL and try get_status.'
+    );
+    this.name = 'UnexpectedContentTypeError';
   }
 }
 
@@ -143,19 +167,20 @@ export class HealthchecksApi {
       : await fetch(url, init);
 
     const limit = options.maxBytes ?? MAX_RESPONSE_BYTES;
+    // A raw caller wants text and can live with less of it; a JSON caller
+    // cannot, because half a document is not a smaller answer.
     const { text, truncated } = await readCapped(
       response as unknown as Response,
       limit,
-      path
+      path,
+      options.raw === true
     );
 
     if (!response.ok) {
       throw new HealthchecksApiError(response.status, text, method, path);
     }
     if (truncated && !options.raw) {
-      // A truncated JSON document cannot be parsed, so there is nothing useful
-      // to hand back — say so rather than failing in JSON.parse.
-      throw new ResponseTooLargeError(path);
+      throw new ResponseTooLargeError(path, limit);
     }
 
     return {
@@ -174,15 +199,22 @@ export class HealthchecksApi {
     const raw = await this.requestRaw(method, path, body, options);
     if (options.raw) return raw;
     if (raw.body.length === 0) return undefined;
-    if (raw.contentType.includes('application/json')) {
-      try {
-        return JSON.parse(raw.body) as unknown;
-      } catch {
-        return raw.body;
-      }
+    // Anything that is not JSON here is a foreign answer, not a Healthchecks
+    // one. Returning the body would send an HTML login page into `listOf`,
+    // which finds no array and reports an empty project — an error swallowed
+    // and replaced with a plausible wrong answer. The endpoints that do speak
+    // text (`/status/`, ping bodies) ask for `raw` and never reach this.
+    if (!raw.contentType.includes('application/json')) {
+      throw new UnexpectedContentTypeError(path, raw.contentType);
     }
-    // `/status/` answers with the literal string "OK" and no JSON content type.
-    return raw.body;
+    try {
+      return JSON.parse(raw.body) as unknown;
+    } catch {
+      throw new UnexpectedContentTypeError(
+        path,
+        `${raw.contentType} (unparseable)`
+      );
+    }
   }
 
   get(path: string, options?: RequestOptions): Promise<unknown> {
@@ -208,13 +240,14 @@ export class HealthchecksApi {
 async function readCapped(
   response: Response,
   maxBytes: number,
-  path: string
+  path: string,
+  allowTruncation: boolean
 ): Promise<{ text: string; truncated: boolean }> {
   const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) {
+  if (Number.isFinite(declared) && declared > maxBytes && !allowTruncation) {
     // Nothing has been read yet, so the body can simply be discarded.
     await response.body?.cancel();
-    throw new ResponseTooLargeError(path);
+    throw new ResponseTooLargeError(path, maxBytes);
   }
 
   const body = response.body;
@@ -229,9 +262,14 @@ async function readCapped(
     if (done) break;
     if (value === undefined) continue;
     if (total + value.byteLength > maxBytes) {
+      // `maxBytes - total` is exactly the remaining budget, and the `>` above
+      // makes an exactly-maxBytes response legal rather than truncated.
       chunks.push(value.subarray(0, maxBytes - total));
       truncated = true;
       await reader.cancel();
+      // NOTE: `total` is deliberately left stale here — the loop exits on the
+      // next line and nothing reads it afterwards. Anything added below this
+      // point must recompute it from `chunks` rather than trusting it.
       break;
     }
     chunks.push(value);

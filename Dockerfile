@@ -14,6 +14,13 @@ FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a5
 WORKDIR /app
 ENV NODE_ENV=production
 
+# The pinned digest is the newest node:24-alpine, and it still ships OpenSSL
+# 3.5.7-r0 — CVE-2026-14456, unbounded memory growth, fixed in 3.5.8-r0. Named
+# packages only: a blanket `apk upgrade` would move every package in the image
+# and throw away the reproducibility the digest is pinned for. Drop this line
+# once the base image carries 3.5.8-r0 or later.
+RUN apk add --no-cache --upgrade libcrypto3 libssl3
+
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 # The server reports its version from package.json at runtime.

@@ -9,7 +9,7 @@ import {
   setResourceKey,
   type ConfirmationStore,
 } from '../confirm.js';
-import { errorResult, jsonResult, run, textResult } from '../result.js';
+import { budgetedJsonResult, errorResult, run, textResult } from '../result.js';
 import {
   channelsParam,
   confirmTokenParam,
@@ -204,7 +204,7 @@ export function registerWriteTools(
         if (unique !== undefined) body.unique = unique;
 
         const created = (await api.post('/checks/', body)) as Check;
-        return jsonResult({
+        return budgetedJsonResult({
           check: normalizeCheck(created),
           channels_applied:
             channels === undefined
@@ -251,7 +251,7 @@ export function registerWriteTools(
         }
 
         const updated = (await api.post(`/checks/${id}`, body)) as Check;
-        return jsonResult({
+        return budgetedJsonResult({
           check: normalizeCheck(updated),
           ...(channels !== undefined
             ? {
@@ -274,7 +274,10 @@ export function registerWriteTools(
         check: uuidParam,
         confirm_token: confirmTokenParam.optional(),
       },
-      annotations: { idempotentHint: true },
+      // Not idempotent, despite pausing an already-paused check being a no-op
+      // upstream: the confirmation token is single-use, so repeating the exact
+      // same call is an error rather than a repeat of the same effect.
+      annotations: { idempotentHint: false },
     },
     async ({ check, confirm_token }) =>
       run(async () => {
@@ -304,7 +307,7 @@ export function registerWriteTools(
         }
 
         const paused = (await api.post(`/checks/${id}/pause`)) as Check;
-        return jsonResult({
+        return budgetedJsonResult({
           check: normalizeCheck(paused),
           note: 'Alerting is off for this check until resume_check is called.',
         });
@@ -319,13 +322,15 @@ export function registerWriteTools(
         'Resumes a paused check and puts it back into the "new" state, waiting ' +
         'for its next ping. Fails with HTTP 409 if the check is not paused.',
       inputSchema: { check: uuidParam },
-      annotations: { idempotentHint: true },
+      // The second call answers 409 rather than repeating the first, so this is
+      // not a no-op to retry blindly.
+      annotations: { idempotentHint: false },
     },
     async ({ check }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
         const resumed = (await api.post(`/checks/${id}/resume`)) as Check;
-        return jsonResult({ check: normalizeCheck(resumed) });
+        return budgetedJsonResult({ check: normalizeCheck(resumed) });
       })
   );
 
@@ -371,7 +376,7 @@ export function registerWriteTools(
         // The API returns the deleted object — the last chance to keep a record
         // of what it was.
         const deleted = (await api.delete(`/checks/${id}`)) as Check;
-        return jsonResult({
+        return budgetedJsonResult({
           deleted: normalizeCheck(deleted),
           note: `Check ${checkIdOf(deleted) ?? id} is gone. This cannot be undone.`,
         });

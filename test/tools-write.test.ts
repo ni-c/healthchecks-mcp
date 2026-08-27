@@ -350,3 +350,22 @@ describe('delete_check', () => {
     ).toBe(true);
   });
 });
+
+describe('clearing every integration', () => {
+  it('is refused, because it silently stops all alerting', async () => {
+    // The same outcome as pause_check, which is gated behind a confirmation
+    // token — and create_check defaults channels to "*" for this exact reason.
+    // A model that reads channels as additive and passes [] to "clear and
+    // re-add" would leave a monitored job permanently silent.
+    const stub = stubFetch();
+    for (const tool of ['create_check', 'update_check']) {
+      const args =
+        tool === 'create_check'
+          ? { name: 'x', timeout: 3600, channels: [] }
+          : { check: CHECK_UUID, channels: [] };
+      const result = await call(await connect(), tool, args);
+      expect(result.isError, tool).toBe(true);
+    }
+    expect(stub.calls).toHaveLength(0);
+  });
+});

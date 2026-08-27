@@ -6,6 +6,7 @@ import {
   assertPathSegment,
   HealthchecksApiError,
   query,
+  ResponseTooLargeError,
   type HealthchecksApi,
   type RawResponse,
 } from '../api.js';
@@ -16,9 +17,11 @@ import {
   summarizeCheck,
   type Check,
 } from '../check.js';
-import { looksReadOnlyKey } from '../config.js';
+import { API_KEY_LENGTH, looksReadOnlyKey } from '../config.js';
 import {
+  budgetedJsonResult,
   budgetedList,
+  budgetedUntrustedResult,
   errorResult,
   jsonResult,
   run,
@@ -127,7 +130,7 @@ export function registerReadTools(
         const body = (await api.get(`/checks/${id}`)) as Check;
         // The description is free text that reaches this server from whoever
         // edits the project, so it is data rather than instructions.
-        return untrustedResult(JSON.stringify(normalizeCheck(body), null, 2));
+        return budgetedUntrustedResult(normalizeCheck(body));
       })
   );
 
@@ -210,7 +213,9 @@ export function registerReadTools(
         // this server returns.
         return untrustedResult(
           raw.truncated
-            ? `${raw.body}\n\n[truncated at ${MAX_PING_BODY_BYTES} bytes]`
+            ? `${raw.body}\n\n[truncated at ${MAX_PING_BODY_BYTES} bytes. The rest is not "
+              + "retrievable — the API serves a ping body whole or not at all, so there is no "
+              + "follow-up call for the remainder.]`
             : raw.body
         );
       })
@@ -299,7 +304,7 @@ export function registerReadTools(
           body && typeof body === 'object' && 'badges' in body
             ? (body as { badges: unknown }).badges
             : body;
-        return jsonResult({ badges });
+        return budgetedJsonResult({ badges });
       })
   );
 
@@ -317,12 +322,14 @@ export function registerReadTools(
     async () =>
       run(async () => {
         // Unauthenticated on purpose: this has to work before the key does.
-        const body = await api.get('/status/', {
+        // `raw` because this endpoint answers with the literal string "OK" and
+        // no JSON content type — the one place a non-JSON body is correct.
+        const raw = (await api.get('/status/', {
           anonymous: true,
+          raw: true,
           maxBytes: 4096,
-        });
-        const text =
-          typeof body === 'string' ? body.trim() : JSON.stringify(body);
+        })) as RawResponse;
+        const text = raw.body.trim();
         return textResult(
           text === 'OK'
             ? `${api.siteRoot} is reachable and its database is answering.`
@@ -357,13 +364,31 @@ export function registerReadTools(
         // Two probes, both harmless GETs: the first says whether the key is
         // accepted at all, the second whether it reaches the read-write half.
         const listChecks = await probe(api, '/checks/');
-        const listChannels = await probe(api, '/channels/');
+        // Only worth asking once the instance answered at all — otherwise this
+        // is a second timeout that says nothing the first did not.
+        const listChannels = listChecks.reachable
+          ? await probe(api, '/channels/')
+          : { ok: false, reachable: false };
         const readWrite = listChannels.ok;
+
+        if (!listChecks.reachable) {
+          return jsonResult({
+            instance: api.siteRoot,
+            key_length_ok: key.length === API_KEY_LENGTH,
+            reachable: false,
+            kind: 'unknown — the instance could not be reached',
+            error: listChecks.detail,
+            note:
+              'Nothing about the key can be determined until the instance answers. ' +
+              'Check HEALTHCHECKS_URL and network access; get_status needs no key.',
+          });
+        }
 
         return jsonResult({
           instance: api.siteRoot,
-          key_length_ok: key.length === 32,
+          key_length_ok: key.length === API_KEY_LENGTH,
           prefixed_hcr: looksReadOnlyKey(key),
+          reachable: true,
           accepted: listChecks.ok,
           kind: !listChecks.ok
             ? 'not accepted by this instance'
@@ -389,19 +414,34 @@ export function registerReadTools(
   );
 }
 
-/** Runs a GET purely to see whether it is allowed, never for its content. */
+/**
+ * Runs a GET purely to see whether it is allowed, never for its content.
+ *
+ * The catch is deliberately narrow. A blanket `return { ok: true }` would turn
+ * an unreachable instance, an expired certificate or a timeout into
+ * "accepted: true, kind: read-write" — a confident wrong answer from the one
+ * tool whose entire job is diagnosing why nothing works.
+ */
 async function probe(
   api: HealthchecksApi,
   path: string
-): Promise<{ ok: boolean; detail?: string }> {
+): Promise<{ ok: boolean; reachable: boolean; detail?: string }> {
   try {
     await api.get(path, { maxBytes: 64 * 1024 });
-    return { ok: true };
+    return { ok: true, reachable: true };
   } catch (error) {
     if (error instanceof HealthchecksApiError) {
-      return { ok: false, detail: `HTTP ${error.status}` };
+      // A status code is an answer: the instance is up, this key is not allowed.
+      return { ok: false, reachable: true, detail: `HTTP ${error.status}` };
     }
-    // A response too large to read still proves the key was accepted.
-    return { ok: true };
+    if (error instanceof ResponseTooLargeError) {
+      // Too big to read still proves the request was accepted.
+      return { ok: true, reachable: true };
+    }
+    return {
+      ok: false,
+      reachable: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
   }
 }

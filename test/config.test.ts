@@ -178,3 +178,21 @@ describe('key inspection', () => {
     expect(looksReadOnlyKey(undefined)).toBe(false);
   });
 });
+
+describe('a URL carrying more than a site root', () => {
+  it('drops a query and a fragment rather than gluing them in front of /api/v3', () => {
+    // normalizeSiteRoot only trims slashes and an API suffix, so validating the
+    // parsed URL and then storing the raw string let a fragment survive —
+    // producing https://host#/api/v3/checks/ on every request.
+    for (const [input, expected] of [
+      ['https://hc.example.net#', 'https://hc.example.net'],
+      ['https://hc.example.net?next=/', 'https://hc.example.net'],
+      ['https://hc.example.net/api/v3#frag', 'https://hc.example.net'],
+    ] as const) {
+      const config = loadConfig(
+        env({ HEALTHCHECKS_URL: input, HEALTHCHECKS_API_KEY: RW_KEY })
+      );
+      expect(config.url, input).toBe(expected);
+    }
+  });
+});
