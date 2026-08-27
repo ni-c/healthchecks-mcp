@@ -29,7 +29,20 @@ jobs:
             server.json > server.tmp && mv server.tmp server.json
           jq -r '.packages[] | "\(.registryType) \(.identifier) \(.version // "-")"' server.json
       - name: Install mcp-publisher
+        # Pinned and checksum-verified. Everything else this repository pulls is
+        # SHA- or digest-pinned; a `releases/latest` binary piped straight into
+        # tar, then run with `id-token: write`, was the one exception.
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          base="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl -fsSL -o mcp-publisher.tar.gz "${base}/mcp-publisher_${os}_${arch}.tar.gz"
+          curl -fsSL -o checksums.txt "${base}/registry_${MCP_PUBLISHER_VERSION#v}_checksums.txt"
+          grep " mcp-publisher_${os}_${arch}.tar.gz\$" checksums.txt \
+            | sed "s| mcp-publisher_${os}_${arch}.tar.gz| mcp-publisher.tar.gz|" \
+            | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
       - run: ./mcp-publisher login github-oidc
       - run: ./mcp-publisher publish
