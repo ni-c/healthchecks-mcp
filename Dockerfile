@@ -1,0 +1,35 @@
+# Build stage
+# node:24-alpine is the ACTIVE LTS line (Krypton), not the newest tag — 26 exists
+# and is not LTS. The digest is the one that tag pointed at on 2026-08-27.
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build && npm prune --omit=dev --ignore-scripts
+
+# Runtime
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+# The server reports its version from package.json at runtime.
+COPY package.json package-lock.json ./
+
+# The base image's bundled npm is a frequent source of HIGH findings and this
+# image never installs anything — remove it rather than carrying its CVEs.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
+# Ownership proof for the MCP Registry: must match server.json's name exactly.
+LABEL io.modelcontextprotocol.server.name="io.github.ni-c/healthchecks-mcp"
+
+# Drop root: the node image ships an unprivileged `node` user (uid 1000).
+USER node
+
+# stdio transport only — no port, no healthcheck. The server starts without an
+# API key (tools stay listable, so registries and inspectors can introspect it);
+# every call then fails with setup instructions instead of reaching the API.
+ENTRYPOINT ["node", "dist/index.js"]

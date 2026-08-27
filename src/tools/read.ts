@@ -1,0 +1,407 @@
+import { z } from 'zod';
+
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+import {
+  assertPathSegment,
+  HealthchecksApiError,
+  query,
+  type HealthchecksApi,
+  type RawResponse,
+} from '../api.js';
+import {
+  listOf,
+  flipsOf,
+  normalizeCheck,
+  summarizeCheck,
+  type Check,
+} from '../check.js';
+import { looksReadOnlyKey } from '../config.js';
+import {
+  budgetedList,
+  errorResult,
+  jsonResult,
+  run,
+  textResult,
+  untrustedResult,
+} from '../result.js';
+import {
+  checkIdParam,
+  limitParam,
+  pingNumberParam,
+  pingTypeParam,
+  secondsWindowParam,
+  slugParam,
+  tagParam,
+  unixTimeParam,
+  uuidParam,
+} from '../schema.js';
+
+/** Default page size. The API paginates nothing, so every ceiling here is ours. */
+const DEFAULT_LIMIT = 50;
+
+/**
+ * Ceiling on one logged ping body.
+ *
+ * The upstream default is 10 000 bytes (`PING_BODY_LIMIT`), but a self-hosted
+ * instance can raise it, and this is the one endpoint whose content is written
+ * by whatever pings the check.
+ */
+const MAX_PING_BODY_BYTES = 64 * 1024;
+
+/** Endpoints the API gates behind a read-write key even though they only read. */
+const NEEDS_READ_WRITE_KEY =
+  'Note: Healthchecks requires a read-write API key for this endpoint even ' +
+  'though it only reads. A read-only key is rejected. Call get_api_key_info to ' +
+  'check which kind is configured.';
+
+export function registerReadTools(
+  server: McpServer,
+  api: HealthchecksApi
+): void {
+  server.registerTool(
+    'list_checks',
+    {
+      title: 'List checks',
+      description:
+        'Lists the checks in the project the API key belongs to, newest state ' +
+        'first. API keys are per project, so this never spans projects. ' +
+        'Descriptions are omitted here — call get_check for one.',
+      inputSchema: {
+        tag: z
+          .array(tagParam)
+          .max(10)
+          .optional()
+          .describe('Only checks carrying all of these tags.'),
+        slug: slugParam
+          .optional()
+          .describe(
+            'Only checks with this slug. Slugs are not unique, so this can match several.'
+          ),
+        status: z
+          .enum(['new', 'up', 'grace', 'down', 'paused'])
+          .optional()
+          .describe('Filtered client-side; the API has no status filter.'),
+        limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ tag, slug, status, limit }) =>
+      run(async () => {
+        const body = await api.get(`/checks/${query({ tag, slug })}`);
+        const all = listOf(body, 'checks') as Check[];
+        const matching = status
+          ? all.filter((check) => check.status === status)
+          : all;
+        const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
+        return budgetedList('checks', shown.map(summarizeCheck), {
+          extra: {
+            total_in_project: all.length,
+            ...(matching.length > shown.length
+              ? {
+                  note:
+                    `${matching.length} checks match; showing ${shown.length}. ` +
+                    'Raise limit, or narrow with tag, slug or status.',
+                }
+              : {}),
+          },
+          narrowWith: 'Narrow the request with tag, slug or status.',
+        });
+      })
+  );
+
+  server.registerTool(
+    'get_check',
+    {
+      title: 'Get check',
+      description:
+        'Fetches one check with all its fields, including the description and ' +
+        'the keyword filters. Accepts a UUID, or the unique_key that a ' +
+        'read-only API key returns in place of one.',
+      inputSchema: { check: checkIdParam },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ check }) =>
+      run(async () => {
+        const id = assertPathSegment(check, 'check id');
+        const body = (await api.get(`/checks/${id}`)) as Check;
+        // The description is free text that reaches this server from whoever
+        // edits the project, so it is data rather than instructions.
+        return untrustedResult(JSON.stringify(normalizeCheck(body), null, 2));
+      })
+  );
+
+  server.registerTool(
+    'list_pings',
+    {
+      title: 'List pings',
+      description:
+        'Lists recent pings of a check, newest first. The instance caps this at ' +
+        '100 pings on a free plan and 1000 on a paid one, and there is no ' +
+        'pagination, so older pings cannot be reached at all. ' +
+        NEEDS_READ_WRITE_KEY,
+      inputSchema: {
+        check: uuidParam,
+        type: pingTypeParam.optional().describe('Filtered client-side.'),
+        limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ check, type, limit }) =>
+      run(async () => {
+        const id = assertPathSegment(check, 'check id');
+        const body = await api.get(`/checks/${id}/pings/`);
+        const all = listOf(body, 'pings') as Record<string, unknown>[];
+        const matching = type ? all.filter((ping) => ping.type === type) : all;
+        const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
+        return budgetedList('pings', shown, {
+          extra: {
+            returned_by_instance: all.length,
+            ...(matching.length > shown.length
+              ? {
+                  note: `${matching.length} pings match; showing ${shown.length}.`,
+                }
+              : {}),
+          },
+          narrowWith: 'Lower limit, or filter by type.',
+        });
+      })
+  );
+
+  server.registerTool(
+    'get_ping_body',
+    {
+      title: 'Get ping body',
+      description:
+        'Returns the body that was POSTed with one ping — usually the output of ' +
+        'the job that reported in, which is the fastest way to see why a check ' +
+        'failed. Truncated at 64 KB. ' +
+        NEEDS_READ_WRITE_KEY,
+      inputSchema: { check: uuidParam, n: pingNumberParam },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ check, n }) =>
+      run(async () => {
+        const id = assertPathSegment(check, 'check id');
+        let raw: RawResponse;
+        try {
+          raw = (await api.get(`/checks/${id}/pings/${n}/body`, {
+            raw: true,
+            maxBytes: MAX_PING_BODY_BYTES,
+          })) as RawResponse;
+        } catch (error) {
+          // 404 here is overloaded four ways and the bare status sends people
+          // looking for the wrong one of them.
+          if (error instanceof HealthchecksApiError && error.status === 404) {
+            return errorResult(
+              `No body available for ping ${n} of check ${id}. Any of these fits: ` +
+                'the check does not exist, the ping number does not exist, the ping ' +
+                'carried no body, or the ping is older than the instance keeps ' +
+                '(100 pings on a free plan, 1000 on a paid one). list_pings shows ' +
+                'which numbers are still available and which of them have a body_url.'
+            );
+          }
+          throw error;
+        }
+        if (raw.body.length === 0) {
+          return textResult(`Ping ${n} of check ${id} has an empty body.`);
+        }
+        // Whatever pings the check writes this. It is the least trusted content
+        // this server returns.
+        return untrustedResult(
+          raw.truncated
+            ? `${raw.body}\n\n[truncated at ${MAX_PING_BODY_BYTES} bytes]`
+            : raw.body
+        );
+      })
+  );
+
+  server.registerTool(
+    'list_flips',
+    {
+      title: 'List status flips',
+      description:
+        'Lists the up/down transitions of a check — the history behind its ' +
+        'current status. The instance keeps the current month and the two before ' +
+        'it. Accepts a UUID or a unique_key.',
+      inputSchema: {
+        check: checkIdParam,
+        seconds: secondsWindowParam.optional(),
+        start: unixTimeParam.optional().describe('Only flips newer than this.'),
+        end: unixTimeParam.optional().describe('Only flips older than this.'),
+        limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ check, seconds, start, end, limit }) =>
+      run(async () => {
+        const id = assertPathSegment(check, 'check id');
+        if (start !== undefined && end !== undefined && start > end) {
+          return errorResult('start must not be later than end.');
+        }
+        const body = await api.get(
+          `/checks/${id}/flips/${query({ seconds, start, end })}`
+        );
+        const all = flipsOf(body);
+        const shown = all.slice(0, limit ?? DEFAULT_LIMIT);
+        return budgetedList('flips', shown, {
+          extra: {
+            returned_by_instance: all.length,
+            ...(all.length > shown.length
+              ? {
+                  note: `${all.length} flips returned; showing ${shown.length}.`,
+                }
+              : {}),
+          },
+          narrowWith: 'Narrow the window with seconds, start or end.',
+        });
+      })
+  );
+
+  server.registerTool(
+    'list_integrations',
+    {
+      title: 'List integrations',
+      description:
+        'Lists the notification integrations of the project, with the UUIDs that ' +
+        'create_check and update_check accept in their channels argument. ' +
+        'Integrations themselves can only be created in the web UI. ' +
+        NEEDS_READ_WRITE_KEY,
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () =>
+      run(async () => {
+        const body = await api.get('/channels/');
+        const channels = listOf(body, 'channels');
+        return budgetedList('integrations', channels, {
+          narrowWith:
+            'The API offers no filter here; the project has that many integrations.',
+        });
+      })
+  );
+
+  server.registerTool(
+    'list_badges',
+    {
+      title: 'List badges',
+      description:
+        'Lists the status badge URLs of the project, one entry per tag plus "*" ' +
+        'for the project as a whole. The plain variants treat a check in its ' +
+        'grace period as up; the ones suffixed 3 report up, late and down separately.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () =>
+      run(async () => {
+        const body = await api.get('/badges/');
+        const badges =
+          body && typeof body === 'object' && 'badges' in body
+            ? (body as { badges: unknown }).badges
+            : body;
+        return jsonResult({ badges });
+      })
+  );
+
+  server.registerTool(
+    'get_status',
+    {
+      title: 'Get instance status',
+      description:
+        'Checks that the configured Healthchecks instance is reachable and its ' +
+        'database is answering. Needs no API key, so it is the tool to try first ' +
+        'when something is not working.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () =>
+      run(async () => {
+        // Unauthenticated on purpose: this has to work before the key does.
+        const body = await api.get('/status/', {
+          anonymous: true,
+          maxBytes: 4096,
+        });
+        const text =
+          typeof body === 'string' ? body.trim() : JSON.stringify(body);
+        return textResult(
+          text === 'OK'
+            ? `${api.siteRoot} is reachable and its database is answering.`
+            : `${api.siteRoot} answered the status endpoint with: ${text}`
+        );
+      })
+  );
+
+  server.registerTool(
+    'get_api_key_info',
+    {
+      title: 'Get API key info',
+      description:
+        'Reports which instance is configured, whether the API key works, and ' +
+        'whether it is a read-only or a read-write key — which decides whether ' +
+        'list_pings, get_ping_body and list_integrations can be used at all, and ' +
+        'whether checks are identified by uuid or by unique_key.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () =>
+      run(async () => {
+        const key = api.apiKey;
+        if (key === undefined) {
+          return jsonResult({
+            instance: api.siteRoot,
+            api_key: 'not configured',
+            note: 'Set HEALTHCHECKS_API_KEY. Only get_status works without it.',
+          });
+        }
+
+        // Two probes, both harmless GETs: the first says whether the key is
+        // accepted at all, the second whether it reaches the read-write half.
+        const listChecks = await probe(api, '/checks/');
+        const listChannels = await probe(api, '/channels/');
+        const readWrite = listChannels.ok;
+
+        return jsonResult({
+          instance: api.siteRoot,
+          key_length_ok: key.length === 32,
+          prefixed_hcr: looksReadOnlyKey(key),
+          accepted: listChecks.ok,
+          kind: !listChecks.ok
+            ? 'not accepted by this instance'
+            : readWrite
+              ? 'read-write'
+              : 'read-only',
+          checks_identified_by: readWrite ? 'uuid' : 'unique_key',
+          unavailable_tools: readWrite
+            ? []
+            : [
+                'list_pings',
+                'get_ping_body',
+                'list_integrations',
+                'create_check',
+                'update_check',
+                'pause_check',
+                'resume_check',
+                'delete_check',
+              ],
+          ...(listChecks.ok ? {} : { error: listChecks.detail }),
+        });
+      })
+  );
+}
+
+/** Runs a GET purely to see whether it is allowed, never for its content. */
+async function probe(
+  api: HealthchecksApi,
+  path: string
+): Promise<{ ok: boolean; detail?: string }> {
+  try {
+    await api.get(path, { maxBytes: 64 * 1024 });
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof HealthchecksApiError) {
+      return { ok: false, detail: `HTTP ${error.status}` };
+    }
+    // A response too large to read still proves the key was accepted.
+    return { ok: true };
+  }
+}

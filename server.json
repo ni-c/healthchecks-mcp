@@ -1,0 +1,107 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ni-c/healthchecks-mcp",
+  "title": "Healthchecks",
+  "description": "Inspect, create and adjust Healthchecks cron and uptime checks, and read why one failed",
+  "websiteUrl": "https://healthchecks-mcp.ni-c.de",
+  "repository": {
+    "url": "https://github.com/ni-c/healthchecks-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "healthchecks-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "HEALTHCHECKS_API_KEY",
+          "description": "Project API key, exactly 32 characters, from Project Settings → API Access",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_URL",
+          "description": "Site root of a self-hosted instance, e.g. https://hc.example.net (default: https://healthchecks.io)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_READ_ONLY",
+          "description": "Set to true to register only the read tools (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
+          "name": "HEALTHCHECKS_ALLOW_TOOLS",
+          "description": "Comma-separated tool names or list_* prefixes to register; 'essential' selects a curated preset (default: all tools)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_DENY_TOOLS",
+          "description": "Comma-separated tool names or list_* prefixes to remove from whatever the allow list left",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_INSECURE_TLS",
+          "description": "Set to true to accept a self-signed certificate from a self-hosted instance (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/ni-c/healthchecks-mcp:0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "HEALTHCHECKS_API_KEY",
+          "description": "Project API key, exactly 32 characters, from Project Settings → API Access",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_URL",
+          "description": "Site root of a self-hosted instance, e.g. https://hc.example.net (default: https://healthchecks.io)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_READ_ONLY",
+          "description": "Set to true to register only the read tools (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
+          "name": "HEALTHCHECKS_ALLOW_TOOLS",
+          "description": "Comma-separated tool names or list_* prefixes to register; 'essential' selects a curated preset (default: all tools)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_DENY_TOOLS",
+          "description": "Comma-separated tool names or list_* prefixes to remove from whatever the allow list left",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "HEALTHCHECKS_INSECURE_TLS",
+          "description": "Set to true to accept a self-signed certificate from a self-hosted instance (default: false)",
+          "isRequired": false,
+          "format": "boolean"
+        }
+      ]
+    }
+  ]
+}
