@@ -6,6 +6,7 @@ import {
   assertPathSegment,
   HealthchecksApiError,
   query,
+  ReadWriteKeyRequiredError,
   ResponseTooLargeError,
   type HealthchecksApi,
   type RawResponse,
@@ -55,8 +56,31 @@ const MAX_PING_BODY_BYTES = 64 * 1024;
 /** Endpoints the API gates behind a read-write key even though they only read. */
 const NEEDS_READ_WRITE_KEY =
   'Note: Healthchecks requires a read-write API key for this endpoint even ' +
-  'though it only reads. A read-only key is rejected. Call get_api_key_info to ' +
-  'check which kind is configured.';
+  'though it only reads. A read-only key is refused with HTTP 401 "wrong api ' +
+  'key", which is not what it sounds like. Call get_api_key_info to check which ' +
+  'kind is configured.';
+
+/**
+ * Translates the 401 that a read-only key produces on a read-write endpoint.
+ *
+ * Confirmed against a real instance: `/channels/`, `/pings/` and
+ * `/pings/<n>/body` answer a read-only key with `401 {"error": "wrong api
+ * key"}`. Passing that on would send the reader to re-check a key that is
+ * perfectly correct, which is the exact confusion this server exists to remove.
+ */
+async function needsReadWriteKey<T>(
+  tool: string,
+  call: () => Promise<T>
+): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof HealthchecksApiError && error.status === 401) {
+      throw new ReadWriteKeyRequiredError(tool);
+    }
+    throw error;
+  }
+}
 
 export function registerReadTools(
   server: McpServer,
@@ -153,7 +177,9 @@ export function registerReadTools(
     async ({ check, type, limit }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const body = await api.get(`/checks/${id}/pings/`);
+        const body = await needsReadWriteKey('list_pings', () =>
+          api.get(`/checks/${id}/pings/`)
+        );
         const all = listOf(body, 'pings') as Record<string, unknown>[];
         const matching = type ? all.filter((ping) => ping.type === type) : all;
         const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
@@ -188,10 +214,12 @@ export function registerReadTools(
         const id = assertPathSegment(check, 'check id');
         let raw: RawResponse;
         try {
-          raw = (await api.get(`/checks/${id}/pings/${n}/body`, {
-            raw: true,
-            maxBytes: MAX_PING_BODY_BYTES,
-          })) as RawResponse;
+          raw = (await needsReadWriteKey('get_ping_body', () =>
+            api.get(`/checks/${id}/pings/${n}/body`, {
+              raw: true,
+              maxBytes: MAX_PING_BODY_BYTES,
+            })
+          )) as RawResponse;
         } catch (error) {
           // 404 here is overloaded four ways and the bare status sends people
           // looking for the wrong one of them.
@@ -277,7 +305,9 @@ export function registerReadTools(
     },
     async () =>
       run(async () => {
-        const body = await api.get('/channels/');
+        const body = await needsReadWriteKey('list_integrations', () =>
+          api.get('/channels/')
+        );
         const channels = listOf(body, 'channels');
         return budgetedList('integrations', channels, {
           narrowWith:

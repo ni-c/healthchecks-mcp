@@ -44,9 +44,14 @@ as if no header was sent. This server checks the length itself and says so at
 startup and on the first call, but if you are looking at a raw 401 from
 somewhere else, count the characters first.
 
-The other half of the same confusion: `list_pings`, `get_ping_body` and
-`list_integrations` require a **read-write** key even though they only read.
-With a read-only key they fail no matter how correct the key is.
+The other half of the same confusion, and the more common one: `list_pings`,
+`get_ping_body` and `list_integrations` require a **read-write** key even though
+they only read. A read-only key is refused there with `401 {"error": "wrong api
+key"}` — the same status and the same wording as a key that does not exist,
+because the API cannot distinguish "not allowed" from "not a key" at that point.
+
+Those three tools translate it rather than passing it on, so you get a sentence
+saying the key is read-only instead of one implying it is broken.
 `get_api_key_info` lists exactly which tools are out of reach.
 
 ## Why can it not ping a check?

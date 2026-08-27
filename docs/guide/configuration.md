@@ -22,7 +22,7 @@ Every project can issue both. The difference reaches further than it looks:
 | ----------------------------------------------- | ------------------------------------------------------------------ |
 | checks carry no `uuid`, only a 40-char `unique_key` | `get_check` and `list_flips` accept either; nothing else can be addressed |
 | no `ping_url`, `update_url` or `channels`       | you cannot see where a check is pinged                              |
-| `list_pings`, `get_ping_body`, `list_integrations` are rejected | even though all three only read — that is how the API gates them |
+| `list_pings`, `get_ping_body`, `list_integrations` are rejected | with `401 "wrong api key"`, even though all three only read — the tools translate that into the real reason |
 | every write tool is rejected                    | pair it with `HEALTHCHECKS_READ_ONLY=true` so they are not offered  |
 
 `get_api_key_info` performs two harmless GETs and tells you which kind you have,
@@ -82,8 +82,8 @@ empty value counts as unset. Nothing else is a pattern: `*_thing` and `list_*_x`
 rejected rather than silently matching nothing.
 
 **`essential`** is a curated preset: `list_checks`, `get_check`, `list_pings`, `list_flips`, `create_check`, `update_check` and `resume_check`. It is marked per tool in the
-[tool reference](/reference/tools), generated from the same constant the filter
-reads, so the two cannot drift. It composes — naming a tool alongside it puts that
+[tool reference](/reference/tools), and a test compares those markers against the
+same constant the filter reads, so the two cannot drift. It composes — naming a tool alongside it puts that
 one back, and `HEALTHCHECKS_DENY_TOOLS` takes one away.
 
 **Both together.** `HEALTHCHECKS_ALLOW_TOOLS` decides what is in;

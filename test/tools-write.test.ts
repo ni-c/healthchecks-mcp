@@ -24,7 +24,7 @@ describe('create_check', () => {
       'POST /checks/': { status: 201, json: checkFixture() },
     });
     await call(await connect(), 'create_check', {
-      name: 'Nightly backup',
+      name: 'Nightly Backup',
       tags: ['prod', 'backup'],
       success_kw: ['done', 'finished ok'],
       timeout: 86_400,
@@ -88,7 +88,7 @@ describe('create_check', () => {
     stubFetch({ 'POST /checks/': { status: 200, json: checkFixture() } });
     const result = jsonOf(
       await call(await connect(), 'create_check', {
-        name: 'Nightly backup',
+        name: 'Nightly Backup',
         timeout: 3600,
         unique: ['name'],
       })
@@ -291,8 +291,8 @@ describe('delete_check', () => {
     const result = await call(await connect(), 'delete_check', {
       check: CHECK_UUID,
     });
-    expect(textOf(result)).not.toContain('Nightly backup');
-    expect(textOf(result)).not.toContain('Runs at 02:00 on the backup host');
+    expect(textOf(result)).not.toContain('Nightly Backup');
+    expect(textOf(result)).not.toContain('Runs pg_dump and uploads it.');
   });
 
   it('deletes on the second call and keeps a record of what it was', async () => {
@@ -313,7 +313,7 @@ describe('delete_check', () => {
     );
     expect(stub.calls[0]?.method).toBe('DELETE');
     expect((result.deleted as Record<string, unknown>).name).toBe(
-      'Nightly backup'
+      'Nightly Backup'
     );
     expect(String(result.note)).toMatch(/cannot be undone/);
   });

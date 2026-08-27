@@ -2,12 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CHECK_UUID,
+  OTHER_UUID,
+  PING_BODY,
   UNIQUE_KEY,
   RO_KEY,
+  badgesFixture,
   call,
+  channelsFixture,
   checkFixture,
   connect,
+  cronCheckFixture,
+  flipsFixture,
   jsonOf,
+  pingsFixture,
+  readOnlyCheckFixture,
   stubFetch,
   textOf,
 } from './harness.js';
@@ -23,7 +31,7 @@ describe('list_checks', () => {
     const result = jsonOf(await call(await connect(), 'list_checks'));
     expect(result.total_in_project).toBe(1);
     expect((result.checks as unknown[])[0]).toMatchObject({
-      name: 'Nightly backup',
+      name: 'Nightly Backup',
     });
   });
 
@@ -92,7 +100,7 @@ describe('get_check', () => {
     });
     expect(textOf(result)).toMatch(/untrusted content from Healthchecks/);
     expect(jsonOf(result)).toMatchObject({
-      desc: 'Runs at 02:00 on the backup host',
+      desc: 'Runs pg_dump and uploads it.',
       id_kind: 'uuid',
     });
   });
@@ -428,5 +436,134 @@ describe('a 200 that is not JSON', () => {
     const result = await call(await connect(), 'list_checks');
     expect(result.isError).toBe(true);
     expect(textOf(result)).toMatch(/instead of JSON/);
+  });
+});
+
+describe('what a read-only key really gets back', () => {
+  // Captured from a real instance: the upstream withholds six fields and adds
+  // unique_key. These tests run against that exact shape rather than a
+  // hand-written approximation of it.
+  it('addresses a check by unique_key when there is no uuid', async () => {
+    stubFetch({
+      [`GET /checks/${UNIQUE_KEY}`]: { json: readOnlyCheckFixture() },
+    });
+    const result = jsonOf(
+      await call(await connect({ apiKey: RO_KEY }), 'get_check', {
+        check: UNIQUE_KEY,
+      })
+    );
+    expect(result.id).toBe(UNIQUE_KEY);
+    expect(result.id_kind).toBe('unique_key');
+    expect(result.uuid).toBeUndefined();
+    expect(result.ping_url).toBeUndefined();
+    // channels is absent upstream, so it must not be invented as an empty list.
+    expect(result.channels).toBeUndefined();
+  });
+
+  it('names the read-only key when a read-write endpoint refuses with 401', async () => {
+    // Verified live: /channels/, /pings/ and /pings/<n>/body answer a read-only
+    // key with 401 {"error":"wrong api key"} — not 403, and not a message that
+    // suggests the key is fine. Relaying it verbatim sends the reader to
+    // re-check a key that is correct.
+    const routes = {
+      [`GET /checks/${CHECK_UUID}/pings/`]: {
+        status: 401,
+        json: { error: 'wrong api key' },
+      },
+      [`GET /checks/${CHECK_UUID}/pings/4/body`]: {
+        status: 401,
+        json: { error: 'wrong api key' },
+      },
+      'GET /channels/': { status: 401, json: { error: 'wrong api key' } },
+    };
+    const calls: [string, Record<string, unknown>][] = [
+      ['list_pings', { check: CHECK_UUID }],
+      ['get_ping_body', { check: CHECK_UUID, n: 4 }],
+      ['list_integrations', {}],
+    ];
+    for (const [tool, args] of calls) {
+      stubFetch(routes);
+      const result = await call(await connect({ apiKey: RO_KEY }), tool, args);
+      expect(result.isError, tool).toBe(true);
+      expect(textOf(result), tool).toMatch(/needs a read-write/);
+      expect(textOf(result), tool).toMatch(
+        /Nothing is wrong with the key itself/
+      );
+      expect(textOf(result), tool).toContain(`HEALTHCHECKS_DENY_TOOLS=${tool}`);
+    }
+  });
+});
+
+describe('against the shapes the instance actually serves', () => {
+  it('reads the flips envelope v4.3 sends', async () => {
+    stubFetch({
+      [`GET /checks/${CHECK_UUID}/flips/`]: { json: { flips: flipsFixture() } },
+    });
+    const result = jsonOf(
+      await call(await connect(), 'list_flips', { check: CHECK_UUID })
+    );
+    expect(result.flips).toHaveLength(3);
+    expect((result.flips as Record<string, unknown>[])[0]).toEqual({
+      timestamp: '2026-08-27T09:39:21+00:00',
+      up: 1,
+    });
+  });
+
+  it('tells a cron check from a simple one by which field is missing', async () => {
+    stubFetch({ [`GET /checks/${OTHER_UUID}`]: { json: cronCheckFixture() } });
+    const result = jsonOf(
+      await call(await connect(), 'get_check', { check: OTHER_UUID })
+    );
+    expect(result.schedule_kind).toBe('scheduled');
+    expect(result.timeout).toBeUndefined();
+    expect(result.tz).toBe('Europe/Luxembourg');
+  });
+
+  it('lists real pings, including the one with no body', async () => {
+    stubFetch({
+      [`GET /checks/${CHECK_UUID}/pings/`]: { json: { pings: pingsFixture() } },
+    });
+    const result = jsonOf(
+      await call(await connect(), 'list_pings', { check: CHECK_UUID })
+    );
+    const pings = result.pings as Record<string, unknown>[];
+    expect(pings).toHaveLength(7);
+    expect(pings.map((p) => p.type)).toEqual([
+      'success',
+      'success',
+      'success',
+      'fail',
+      'log',
+      'success',
+      'start',
+    ]);
+    expect(pings.find((p) => p.n === 6)?.body_url).toBeNull();
+  });
+
+  it('returns a real ping body as untrusted content', async () => {
+    stubFetch({
+      [`GET /checks/${CHECK_UUID}/pings/4/body`]: {
+        text: PING_BODY,
+        contentType: 'text/plain',
+      },
+    });
+    const result = await call(await connect(), 'get_ping_body', {
+      check: CHECK_UUID,
+      n: 4,
+    });
+    expect(textOf(result)).toMatch(/untrusted content/);
+    expect(textOf(result)).toContain('pg_dump: connection refused');
+  });
+
+  it('unwraps the real channels and badges envelopes', async () => {
+    stubFetch({ 'GET /channels/': { json: { channels: channelsFixture() } } });
+    expect(
+      jsonOf(await call(await connect(), 'list_integrations')).integrations
+    ).toHaveLength(2);
+    stubFetch({ 'GET /badges/': { json: { badges: badgesFixture() } } });
+    const badges = jsonOf(await call(await connect(), 'list_badges'))
+      .badges as Record<string, Record<string, string>>;
+    expect(Object.keys(badges)).toContain('*');
+    expect(badges.prod?.svg3).toMatch(/\/prod\.svg$/);
   });
 });

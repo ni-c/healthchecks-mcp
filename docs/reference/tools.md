@@ -11,7 +11,8 @@ selects the ones marked **essential** below — see
 Two markers recur:
 
 - 🔑 **needs a read-write key** — the tool only reads, but Healthchecks gates the
-  endpoint behind a read-write key anyway.
+  endpoint behind a read-write key anyway, and refuses a read-only one with
+  `401 "wrong api key"`. The tool says what that really means.
 - 🆔 **needs a UUID** — a `unique_key` will not do, because the API routes that
   path on a UUID-shaped segment and answers anything else with a bare 404.
 

@@ -1,6 +1,10 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
-import { HealthchecksApiError, ResponseTooLargeError } from './api.js';
+import {
+  HealthchecksApiError,
+  ReadWriteKeyRequiredError,
+  ResponseTooLargeError,
+} from './api.js';
 
 /**
  * Ceiling on what one tool result may add to the model's context.
@@ -172,23 +176,31 @@ export function sanitizeErrorBody(body: string): string {
 /**
  * Turns an upstream status code into the sentence that actually helps.
  *
- * Healthchecks overloads several of them in ways that are not guessable from
- * the number: a 403 is almost always the *right* UUID with a key for a
- * *different project*, because API keys are per project and the view checks
- * ownership only after finding the object.
+ * The 401/403 split is the part worth getting right, and it is the opposite of
+ * what it looks like. Verified against a real instance on 2026-08-27:
+ *
+ *   - A **read-only key on a read-write endpoint is a 401**, body
+ *     `{"error": "wrong api key"}` — because `for_api_key(…, accept_ro=false)`
+ *     simply fails to find a project and the decorator cannot tell "not allowed"
+ *     from "not a key". Nothing about that answer suggests the key is fine and
+ *     merely too weak.
+ *   - A **403 is the right UUID with a key for a different project**, because
+ *     the view looks the object up globally and checks ownership afterwards.
  */
 export function statusHint(status: number): string {
   switch (status) {
     case 401:
       return (
-        'HEALTHCHECKS_API_KEY is missing, has the wrong length (it must be exactly ' +
-        '32 characters) or is not a key of this instance.'
+        'Most often this key is read-only and the endpoint needs a read-write ' +
+        'one — Healthchecks answers that case with 401 "wrong api key" rather ' +
+        'than a permission error. Otherwise HEALTHCHECKS_API_KEY is missing, is ' +
+        'not exactly 32 characters, or is not a key of this instance. ' +
+        'Call get_api_key_info to see which.'
       );
     case 403:
       return (
-        'Either the object belongs to a different project than the API key — keys ' +
-        'are per project, not per account — or the key is read-only and this ' +
-        'endpoint needs a read-write one, or the account has reached its check ' +
+        'The object belongs to a different project than the API key — keys are ' +
+        'per project, not per account — or the account has reached its check ' +
         'limit. Call get_api_key_info to see which of these applies.'
       );
     case 404:
@@ -226,7 +238,10 @@ export async function run(
         `${error.message}\n${sanitizeErrorBody(error.body)}${hint ? `\nHint: ${hint}` : ''}`
       );
     }
-    if (error instanceof ResponseTooLargeError) {
+    if (
+      error instanceof ResponseTooLargeError ||
+      error instanceof ReadWriteKeyRequiredError
+    ) {
       return errorResult(`healthchecks-mcp: ${error.message}`);
     }
     const message = error instanceof Error ? error.message : String(error);

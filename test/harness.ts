@@ -151,23 +151,43 @@ export function tokenOf(result: CallToolResult): string {
   return match[1];
 }
 
-export const CHECK_UUID = 'f618072a-7bde-4eee-af63-71a77c5723bc';
-export const OTHER_UUID = '0c6c9f5e-1e3a-4a5f-9a3f-8b1c2d3e4f50';
-export const UNIQUE_KEY = 'a'.repeat(40);
+export const CHECK_UUID = '403c0ad2-72ac-4f0a-8802-69ee5c9e29fd';
+export const OTHER_UUID = '5cd1712e-33b2-48dc-a36e-f2ebf2d3b5dc';
+export const UNIQUE_KEY = '4616b2faa4483b13263e4adda4133688010b2794';
+const BADGE_KEY = '404d9fc2-287f-4136-b4c1-152e8d98a815';
 
-/** A check as a read-write key sees it. */
+/*
+ * The fixtures below were captured from a real Healthchecks v4.3 instance on
+ * 2026-08-27 and then only reduced, never rewritten. That matters: the previous
+ * versions were written from my reading of the upstream source, so the tests
+ * could only prove the server was consistent with my understanding — not that
+ * the understanding was right. Two things these captures pinned down that a
+ * hand-written fixture had wrong or vague:
+ *
+ *   - a simple check carries `timeout` and no `schedule`; a cron check carries
+ *     `schedule` + `tz` and no `timeout`. There is no `kind` field either way.
+ *   - a read-only key gets a different object: no `uuid`, `ping_url`,
+ *     `update_url`, `pause_url`, `resume_url` or `channels`, and a 40-character
+ *     `unique_key` instead. `readOnlyCheckFixture` is that exact set.
+ *
+ * Only the host was rewritten to `hc.example.net` and the pings' `remote_addr`
+ * to the documentation range — the capture ran against a container whose
+ * bridge address is a private IP, which has no business in a public repository.
+ */
+
+/** A check as a read-write key sees it — a simple, timeout-driven one. */
 export function checkFixture(overrides: Partial<Check> = {}): Check {
   return {
-    name: 'Nightly backup',
+    name: 'Nightly Backup',
     slug: 'nightly-backup',
-    tags: 'prod backup',
-    desc: 'Runs at 02:00 on the backup host',
+    tags: 'prod backup db',
+    desc: 'Runs pg_dump and uploads it.',
     grace: 3600,
-    n_pings: 42,
+    n_pings: 7,
     status: 'up',
     started: false,
-    last_ping: '2026-08-27T02:00:00+00:00',
-    next_ping: '2026-08-28T02:00:00+00:00',
+    last_ping: '2026-08-27T09:39:21+00:00',
+    next_ping: '2026-08-28T09:39:21+00:00',
     manual_resume: false,
     methods: '',
     subject: '',
@@ -179,14 +199,177 @@ export function checkFixture(overrides: Partial<Check> = {}): Check {
     filter_body: false,
     filter_http_body: false,
     filter_default_fail: false,
-    badge_url: `${SITE}/b/2/abc.svg`,
+    badge_url: `${SITE}/b/2/${BADGE_KEY}.svg`,
     uuid: CHECK_UUID,
     ping_url: `${SITE}/ping/${CHECK_UUID}`,
     update_url: `${API}/checks/${CHECK_UUID}`,
     pause_url: `${API}/checks/${CHECK_UUID}/pause`,
     resume_url: `${API}/checks/${CHECK_UUID}/resume`,
-    channels: '4ec5a071-2d08-4baa-898a-eb4eb3cd6941',
+    channels:
+      '1d5c30df-8e07-479c-9c9c-649b5b319893,79c2cff2-349c-44fa-9077-0353ab9aa692',
     timeout: 86400,
     ...overrides,
   };
+}
+
+/**
+ * A cron check. Note what is *absent*: `timeout`. The upstream emits one or the
+ * other, never both, which is the only way to tell the two kinds apart.
+ */
+export function cronCheckFixture(overrides: Partial<Check> = {}): Check {
+  const check = checkFixture({
+    name: 'Hourly Report',
+    slug: 'hourly-report',
+    tags: 'prod reports',
+    desc: 'Hourly aggregation.',
+    grace: 900,
+    n_pings: 1,
+    status: 'new',
+    last_ping: null,
+    next_ping: null,
+    uuid: OTHER_UUID,
+    schedule: '0 * * * *',
+    tz: 'Europe/Luxembourg',
+    ...overrides,
+  });
+  delete check.timeout;
+  return check;
+}
+
+/**
+ * The same check as a read-only key sees it.
+ *
+ * The six fields the upstream withholds are deleted rather than set to
+ * undefined, because `unique_key`-vs-`uuid` is decided by presence.
+ */
+export function readOnlyCheckFixture(overrides: Partial<Check> = {}): Check {
+  const check = checkFixture(overrides);
+  for (const field of [
+    'uuid',
+    'ping_url',
+    'update_url',
+    'pause_url',
+    'resume_url',
+    'channels',
+  ]) {
+    delete check[field];
+  }
+  check.unique_key = UNIQUE_KEY;
+  return check;
+}
+
+/**
+ * Real pings, newest first, as `GET /checks/<uuid>/pings/` returns them.
+ *
+ * `n: 6` is the one that carried no body — the upstream answers its `body`
+ * endpoint with 404 rather than an empty 200, and it has no `body_url` here.
+ * `last_duration` only appears on a check whose latest success followed a
+ * `/start`, which is why `checkFixture` does not carry it.
+ */
+export function pingsFixture(): Record<string, unknown>[] {
+  const bodyUrl = (n: number) => `${API}/checks/${CHECK_UUID}/pings/${n}/body`;
+  const base = {
+    scheme: 'http',
+    remote_addr: '203.0.113.10',
+    method: 'POST',
+    ua: 'curl/8.21.0',
+    rid: null,
+  };
+  return [
+    {
+      type: 'success',
+      date: '2026-08-27T09:39:21.987390+00:00',
+      n: 7,
+      ...base,
+      body_url: bodyUrl(7),
+    },
+    {
+      type: 'success',
+      date: '2026-08-27T09:39:21.966405+00:00',
+      n: 6,
+      ...base,
+      body_url: null,
+    },
+    {
+      type: 'success',
+      date: '2026-08-27T09:39:21.955001+00:00',
+      n: 5,
+      ...base,
+      body_url: bodyUrl(5),
+    },
+    {
+      type: 'fail',
+      date: '2026-08-27T09:39:21.944072+00:00',
+      n: 4,
+      ...base,
+      body_url: bodyUrl(4),
+    },
+    {
+      type: 'log',
+      date: '2026-08-27T09:39:21.933145+00:00',
+      n: 3,
+      ...base,
+      body_url: bodyUrl(3),
+    },
+    {
+      type: 'success',
+      date: '2026-08-27T09:39:21.921730+00:00',
+      n: 2,
+      ...base,
+      body_url: bodyUrl(2),
+    },
+    {
+      type: 'start',
+      date: '2026-08-27T09:39:20.901544+00:00',
+      n: 1,
+      ...base,
+      body_url: bodyUrl(1),
+    },
+  ];
+}
+
+/** What one `/fail` ping actually printed — the payload `get_ping_body` returns. */
+export const PING_BODY = 'pg_dump: connection refused\nexit 1';
+
+/**
+ * Flips, as v4.3 returns them: wrapped in an envelope, and carrying only a
+ * timestamp and an up flag. The published documentation shows a bare array —
+ * `flipsOf` accepts both, and this is the shape that is actually served.
+ */
+export function flipsFixture(): Record<string, unknown>[] {
+  return [
+    { timestamp: '2026-08-27T09:39:21+00:00', up: 1 },
+    { timestamp: '2026-08-27T09:39:21+00:00', up: 0 },
+    { timestamp: '2026-08-27T09:39:21+00:00', up: 1 },
+  ];
+}
+
+/** Integrations. `value` never leaves the server, so `to_dict` is these three keys. */
+export function channelsFixture(): Record<string, unknown>[] {
+  return [
+    {
+      id: '79c2cff2-349c-44fa-9077-0353ab9aa692',
+      name: 'Ops Email',
+      kind: 'email',
+    },
+    {
+      id: '1d5c30df-8e07-479c-9c9c-649b5b319893',
+      name: 'Ops Webhook',
+      kind: 'webhook',
+    },
+  ];
+}
+
+/** Badges: one entry per tag plus `*`, six URL variants each. */
+export function badgesFixture(): Record<string, unknown> {
+  const key = 'c8d74d53-a3e4-4e57-a7bc-0528dd5c7f52';
+  const set = (sig: string, tag: string) => ({
+    svg: `${SITE}/badge/${key}/${sig}-2/${tag}.svg`,
+    svg3: `${SITE}/badge/${key}/${sig}/${tag}.svg`,
+    json: `${SITE}/badge/${key}/${sig}-2/${tag}.json`,
+    json3: `${SITE}/badge/${key}/${sig}/${tag}.json`,
+    shields: `${SITE}/badge/${key}/${sig}-2/${tag}.shields`,
+    shields3: `${SITE}/badge/${key}/${sig}/${tag}.shields`,
+  });
+  return { prod: set('TsOsNDAQ', 'prod'), '*': set('LJqm-Wio', '%2A') };
 }

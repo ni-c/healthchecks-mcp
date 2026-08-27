@@ -90,9 +90,9 @@ describe('normalizeCheck', () => {
 
   it('keeps every other field the API returned', () => {
     const normalized = normalizeCheck(checkFixture());
-    expect(normalized.desc).toBe('Runs at 02:00 on the backup host');
+    expect(normalized.desc).toBe('Runs pg_dump and uploads it.');
     expect(normalized.badge_url).toBeDefined();
-    expect(normalized.n_pings).toBe(42);
+    expect(normalized.n_pings).toBe(7);
   });
 });
 
@@ -104,11 +104,11 @@ describe('summarizeCheck', () => {
   it('keeps what a list is read for', () => {
     expect(summarizeCheck(checkFixture())).toMatchObject({
       id: CHECK_UUID,
-      name: 'Nightly backup',
+      name: 'Nightly Backup',
       slug: 'nightly-backup',
-      tags: ['prod', 'backup'],
+      tags: ['prod', 'backup', 'db'],
       status: 'up',
-      n_pings: 42,
+      n_pings: 7,
       timeout: 86400,
     });
   });

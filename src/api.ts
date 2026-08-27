@@ -61,6 +61,29 @@ function formatLimit(bytes: number): string {
     : `${Math.round(bytes / 1024)} KB`;
 }
 
+/**
+ * Thrown when an endpoint that only reads was refused for needing a read-write key.
+ *
+ * Healthchecks gates `/channels/`, `/pings/` and `/pings/<n>/body` behind
+ * `@authorize` even though all three are GETs, and refuses a read-only key there
+ * with `401 {"error": "wrong api key"}`. Relaying that verbatim sends the reader
+ * to re-check a key that is correct — so the three call sites translate it.
+ */
+export class ReadWriteKeyRequiredError extends Error {
+  constructor(public readonly tool: string) {
+    super(
+      `${tool} needs a read-write Healthchecks API key. The configured key was ` +
+        'rejected with HTTP 401 "wrong api key", which is how Healthchecks ' +
+        'answers a read-only key on this endpoint — it only reads, but the API ' +
+        'gates it behind a read-write key anyway. Nothing is wrong with the key ' +
+        'itself. Use a read-write key from Project Settings → API Access, or ' +
+        `HEALTHCHECKS_DENY_TOOLS=${tool} to stop offering the tool. ` +
+        'get_api_key_info reports which kind of key is configured.'
+    );
+    this.name = 'ReadWriteKeyRequiredError';
+  }
+}
+
 /** Thrown when a response that has to be JSON is not. */
 export class UnexpectedContentTypeError extends Error {
   constructor(path: string, contentType: string) {

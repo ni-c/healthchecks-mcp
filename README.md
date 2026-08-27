@@ -87,8 +87,13 @@ instructions instead of reaching the API.
 
 **Read-only keys.** Healthchecks gates three tools that only read — `list_pings`,
 `get_ping_body` and `list_integrations` — behind a read-write key anyway. With a
-read-only key those fail, along with all five write tools. `get_api_key_info` says
-so explicitly; `HEALTHCHECKS_DENY_TOOLS` is the tidy way to hide them.
+read-only key those fail, along with all five write tools.
+
+The failure does not look like a permission problem: the API answers
+`401 {"error": "wrong api key"}`, which reads as if the key were wrong or
+missing. It is not — those three tools translate it into what actually happened.
+`get_api_key_info` reports which kind of key is configured, and
+`HEALTHCHECKS_DENY_TOOLS` is the tidy way to stop offering them at all.
 
 ### Choosing which tools load
 
