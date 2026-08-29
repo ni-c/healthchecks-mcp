@@ -1,6 +1,6 @@
 {
   "name": "healthchecks-mcp",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0",
   "mcpName": "io.github.ni-c/healthchecks-mcp",
   "description": "MCP server for Healthchecks: inspect, create and adjust cron and uptime checks, and read why one failed",
   "keywords": [

@@ -14,13 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing is released yet — this section becomes `## [0.1.0]` when the first tag is
-pushed.
+## [0.1.0] - 2026-08-29
 
 ### Added
 
-- MCP server for the [Healthchecks](https://healthchecks.io) Management API v3,
-  against the hosted service or a self-hosted instance.
+- Initial release: an MCP server for the
+  [Healthchecks](https://healthchecks.io) Management API v3, against the hosted
+  service or a self-hosted instance.
+- A multi-architecture container image at `ghcr.io/ni-c/healthchecks-mcp`
+  (amd64 and arm64), published with an SBOM and build provenance. It runs as an
+  unprivileged user with no npm in the runtime layer and speaks stdio only, so
+  it needs `-i` and exposes no port.
 - Nine read tools: `list_checks`, `get_check`, `list_pings`, `get_ping_body`,
   `list_flips`, `list_integrations`, `list_badges`, `get_status` and
   `get_api_key_info`.
@@ -39,5 +43,9 @@ pushed.
   short-lived confirmation token bound to that one check.
 - Results are budgeted — the Management API paginates nothing, so `list_checks`
   drops whole entries rather than overflowing the model's context, and says so.
+- The server cannot ping a check, deliberately. A ping is a job's own claim that
+  it ran, and the same server hands the model ping bodies written by whatever
+  pings the check — a ping tool would close the loop from untrusted text to
+  forged monitoring.
 
 <!-- #endregion changelog -->
