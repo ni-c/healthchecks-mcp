@@ -125,6 +125,20 @@ describe('loadConfig', () => {
     spy.mockRestore();
   });
 
+  it.each([
+    ['bracketed IPv6', 'http://[::1]:8000'],
+    ['IPv4-mapped IPv6', 'http://[::ffff:127.0.0.1]:8000'],
+    ['a fully qualified localhost', 'http://localhost.:8000'],
+  ])('does not warn about plain http to loopback spelled as %s', (_, url) => {
+    // URL.hostname hands back '[::1]' with its brackets and normalises
+    // ::ffff:127.0.0.1 to '[::ffff:7f00:1]'. The comparison this replaced
+    // checked for a bare '::1' and so warned about every one of these.
+    const spy = quiet();
+    loadConfig(env({ HEALTHCHECKS_URL: url, HEALTHCHECKS_API_KEY: RW_KEY }));
+    expect(spy.mock.calls.flat().join(' ')).not.toMatch(/unencrypted/);
+    spy.mockRestore();
+  });
+
   it('warns about a key of the wrong length instead of leaving it to a 401', () => {
     const spy = quiet();
     loadConfig(env({ HEALTHCHECKS_API_KEY: 'too-short' }));

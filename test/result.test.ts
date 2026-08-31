@@ -88,6 +88,18 @@ describe('budgetedList', () => {
 });
 
 describe('sanitizeErrorBody', () => {
+  it('drops markup that does not open with a doctype or <html>', () => {
+    // A WAF block page can open with a comment, and an upstream that answers
+    // errors in XML is exactly as useless to the model as one that answers in
+    // HTML. The old check required a doctype or an <html> tag first and let
+    // both of these through.
+    expect(sanitizeErrorBody('<?xml version="1.0"?><error>denied</error>')).toBe(
+      '(HTML error page omitted)'
+    );
+    expect(sanitizeErrorBody('<!-- blocked by policy -->\n<html>x</html>')).toBe(
+      '(HTML error page omitted)'
+    );
+  });
   it('drops an HTML error page entirely', () => {
     // A reverse proxy's error page is several kilobytes of markup and no
     // information; a WAF's is several kilobytes of someone else's prose.
