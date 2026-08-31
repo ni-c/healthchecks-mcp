@@ -1,7 +1,5 @@
 import { z } from 'zod';
-
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-
+import type { McpServer } from '@modelcontextprotocol/server';
 import {
   assertPathSegment,
   HealthchecksApiError,
@@ -18,7 +16,6 @@ import {
   summarizeCheck,
   type Check,
 } from '../check.js';
-import { API_KEY_LENGTH, looksReadOnlyKey } from '../config.js';
 import {
   budgetedJsonResult,
   budgetedList,
@@ -40,6 +37,8 @@ import {
   unixTimeParam,
   uuidParam,
 } from '../schema.js';
+
+import { API_KEY_LENGTH, looksReadOnlyKey } from '../config.js';
 
 /** Default page size. The API paginates nothing, so every ceiling here is ours. */
 const DEFAULT_LIMIT = 50;
@@ -94,7 +93,7 @@ export function registerReadTools(
         'Lists the checks in the project the API key belongs to, newest state ' +
         'first. API keys are per project, so this never spans projects. ' +
         'Descriptions are omitted here — call get_check for one.',
-      inputSchema: {
+      inputSchema: z.object({
         tag: z
           .array(tagParam)
           .max(10)
@@ -110,7 +109,7 @@ export function registerReadTools(
           .optional()
           .describe('Filtered client-side; the API has no status filter.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
-      },
+      }),
       annotations: { readOnlyHint: true },
     },
     async ({ tag, slug, status, limit }) =>
@@ -145,7 +144,7 @@ export function registerReadTools(
         'Fetches one check with all its fields, including the description and ' +
         'the keyword filters. Accepts a UUID, or the unique_key that a ' +
         'read-only API key returns in place of one.',
-      inputSchema: { check: checkIdParam },
+      inputSchema: z.object({ check: checkIdParam }),
       annotations: { readOnlyHint: true },
     },
     async ({ check }) =>
@@ -167,11 +166,11 @@ export function registerReadTools(
         '100 pings on a free plan and 1000 on a paid one, and there is no ' +
         'pagination, so older pings cannot be reached at all. ' +
         NEEDS_READ_WRITE_KEY,
-      inputSchema: {
+      inputSchema: z.object({
         check: uuidParam,
         type: pingTypeParam.optional().describe('Filtered client-side.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
-      },
+      }),
       annotations: { readOnlyHint: true },
     },
     async ({ check, type, limit }) =>
@@ -206,7 +205,7 @@ export function registerReadTools(
         'the job that reported in, which is the fastest way to see why a check ' +
         'failed. Truncated at 64 KB. ' +
         NEEDS_READ_WRITE_KEY,
-      inputSchema: { check: uuidParam, n: pingNumberParam },
+      inputSchema: z.object({ check: uuidParam, n: pingNumberParam }),
       annotations: { readOnlyHint: true },
     },
     async ({ check, n }) =>
@@ -257,13 +256,13 @@ export function registerReadTools(
         'Lists the up/down transitions of a check — the history behind its ' +
         'current status. The instance keeps the current month and the two before ' +
         'it. Accepts a UUID or a unique_key.',
-      inputSchema: {
+      inputSchema: z.object({
         check: checkIdParam,
         seconds: secondsWindowParam.optional(),
         start: unixTimeParam.optional().describe('Only flips newer than this.'),
         end: unixTimeParam.optional().describe('Only flips older than this.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
-      },
+      }),
       annotations: { readOnlyHint: true },
     },
     async ({ check, seconds, start, end, limit }) =>
@@ -300,7 +299,7 @@ export function registerReadTools(
         'create_check and update_check accept in their channels argument. ' +
         'Integrations themselves can only be created in the web UI. ' +
         NEEDS_READ_WRITE_KEY,
-      inputSchema: {},
+      inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
     async () =>
@@ -324,7 +323,7 @@ export function registerReadTools(
         'Lists the status badge URLs of the project, one entry per tag plus "*" ' +
         'for the project as a whole. The plain variants treat a check in its ' +
         'grace period as up; the ones suffixed 3 report up, late and down separately.',
-      inputSchema: {},
+      inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
     async () =>
@@ -346,7 +345,7 @@ export function registerReadTools(
         'Checks that the configured Healthchecks instance is reachable and its ' +
         'database is answering. Needs no API key, so it is the tool to try first ' +
         'when something is not working.',
-      inputSchema: {},
+      inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
     async () =>
@@ -377,7 +376,7 @@ export function registerReadTools(
         'whether it is a read-only or a read-write key — which decides whether ' +
         'list_pings, get_ping_body and list_integrations can be used at all, and ' +
         'whether checks are identified by uuid or by unique_key.',
-      inputSchema: {},
+      inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
     async () =>

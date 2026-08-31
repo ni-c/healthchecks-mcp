@@ -1,15 +1,10 @@
 import { z } from 'zod';
-
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-
-import { assertPathSegment, type HealthchecksApi } from '../api.js';
-import { checkIdOf, normalizeCheck, type Check } from '../check.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import {
   confirmationPrompt,
   setResourceKey,
   type ConfirmationStore,
 } from '../confirm.js';
-import { budgetedJsonResult, errorResult, run, textResult } from '../result.js';
 import {
   channelsParam,
   confirmTokenParam,
@@ -26,6 +21,10 @@ import {
   uniqueParam,
   uuidParam,
 } from '../schema.js';
+
+import { assertPathSegment, type HealthchecksApi } from '../api.js';
+import { checkIdOf, normalizeCheck, type Check } from '../check.js';
+import { budgetedJsonResult, errorResult, run, textResult } from '../result.js';
 
 /**
  * Notification integrations a check gets when the caller names none.
@@ -177,7 +176,7 @@ export function registerWriteTools(
         `says otherwise, the new check notifies every integration in the project ` +
         '("*"), because a check with no integrations never alerts anyone. ' +
         'Setting unique turns this into an upsert that may UPDATE an existing check.',
-      inputSchema: {
+      inputSchema: z.object({
         ...commonFields,
         channels: channelsParam
           .optional()
@@ -186,7 +185,7 @@ export function registerWriteTools(
               'list of UUIDs or exact names from list_integrations.'
           ),
         unique: uniqueParam.optional(),
-      },
+      }),
       annotations: { idempotentHint: false },
     },
     async ({ channels, unique, ...input }) =>
@@ -230,11 +229,11 @@ export function registerWriteTools(
         'exceptions: channels REPLACES the integration list rather than adding ' +
         'to it, and setting schedule on a check that used timeout switches it ' +
         'over. Needs a UUID, which read-only API keys never see.',
-      inputSchema: {
+      inputSchema: z.object({
         check: uuidParam,
         ...commonFields,
         channels: channelsParam.optional(),
-      },
+      }),
       annotations: { idempotentHint: true },
     },
     async ({ check, channels, ...input }) =>
@@ -270,10 +269,10 @@ export function registerWriteTools(
         'Pauses a check: it stops expecting pings and stops alerting. Two-step — ' +
         'the first call returns a confirmation token, the second call with that ' +
         'token performs the pause.',
-      inputSchema: {
+      inputSchema: z.object({
         check: uuidParam,
         confirm_token: confirmTokenParam.optional(),
-      },
+      }),
       // Not idempotent, despite pausing an already-paused check being a no-op
       // upstream: the confirmation token is single-use, so repeating the exact
       // same call is an error rather than a repeat of the same effect.
@@ -321,7 +320,7 @@ export function registerWriteTools(
       description:
         'Resumes a paused check and puts it back into the "new" state, waiting ' +
         'for its next ping. Fails with HTTP 409 if the check is not paused.',
-      inputSchema: { check: uuidParam },
+      inputSchema: z.object({ check: uuidParam }),
       // The second call answers 409 rather than repeating the first, so this is
       // not a no-op to retry blindly.
       annotations: { idempotentHint: false },
@@ -342,10 +341,10 @@ export function registerWriteTools(
         'Deletes a check permanently. Its UUID is not recoverable, so every ' +
         'deployed script pinging that URL breaks. Two-step: the first call ' +
         'returns a confirmation token, the second call with that token deletes.',
-      inputSchema: {
+      inputSchema: z.object({
         check: uuidParam,
         confirm_token: confirmTokenParam.optional(),
-      },
+      }),
       annotations: { destructiveHint: true, idempotentHint: false },
     },
     async ({ check, confirm_token }) =>
