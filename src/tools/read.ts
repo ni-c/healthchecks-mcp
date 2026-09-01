@@ -58,7 +58,13 @@ const NEEDS_READ_WRITE_KEY =
   'Note: Healthchecks requires a read-write API key for this endpoint even ' +
   'though it only reads. A read-only key is refused with HTTP 401 "wrong api ' +
   'key", which is not what it sounds like. Call get_api_key_info to check which ' +
-  'kind is configured.';
+  'kind is configured.\n\n' +
+  'With a read-only key this tool cannot even be *called* correctly: it ' +
+  'addresses a check by uuid, and a read-only key never sees one — ' +
+  'list_checks answers with a 40-character unique_key instead. So the refusal ' +
+  'you get first is about the argument, not the key. Neither is a mistake to ' +
+  'fix: with a read-only key this endpoint is out of reach, and there is ' +
+  'nothing to pass that would change it.';
 
 /**
  * Translates the 401 that a read-only key produces on a read-write endpoint.
