@@ -274,6 +274,50 @@ describe('resume_check', () => {
 });
 
 describe('delete_check', () => {
+  it('asks the user, and deletes once they accept', async () => {
+    // The point of the approval path: a client that can put a question in front
+    // of a person gets asked, instead of a token that only proves the same call
+    // was made twice.
+    const stub = stubFetch({
+      [`DELETE /checks/${CHECK_UUID}`]: { json: checkFixture() },
+    });
+    const client = await connect({}, 'accept');
+    const result = await call(client, 'delete_check', { check: CHECK_UUID });
+    expect(client.prompts).toHaveLength(1);
+    expect(client.prompts[0]).toMatch(/UUID cannot be recovered/);
+    expect(stub.calls).toHaveLength(1);
+    expect(textOf(result)).toContain('is gone');
+  });
+
+  it('deletes nothing when the user declines', async () => {
+    const stub = stubFetch();
+    const client = await connect({}, 'decline');
+    const result = await call(client, 'delete_check', { check: CHECK_UUID });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('declined');
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it('deletes nothing when the user closes the dialog', async () => {
+    // Cancel is not a yes. For an irreversible delete the only safe reading of
+    // "no answer" is no.
+    const stub = stubFetch();
+    const client = await connect({}, 'cancel');
+    const result = await call(client, 'delete_check', { check: CHECK_UUID });
+    expect(result.isError).toBe(true);
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it('offers no token to a client it can ask properly', async () => {
+    // The control that makes the three above mean something: the token path is
+    // unchanged, so a server that silently never asked would still pass every
+    // other test in this file.
+    stubFetch();
+    const client = await connect({}, 'decline');
+    const result = await call(client, 'delete_check', { check: CHECK_UUID });
+    expect(textOf(result)).not.toContain('confirm_token=');
+  });
+
   it('hands back a token first, names the consequence and points at pause', async () => {
     const stub = stubFetch();
     const result = await call(await connect(), 'delete_check', {

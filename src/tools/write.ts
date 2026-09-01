@@ -1,10 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import {
-  confirmationPrompt,
-  setResourceKey,
-  type ConfirmationStore,
-} from '../confirm.js';
+import type { Approver, ConfirmationStore } from 'mcp-approval';
+import { setResourceKey } from 'mcp-approval';
 import {
   channelsParam,
   confirmTokenParam,
@@ -24,7 +21,7 @@ import {
 
 import { assertPathSegment, type HealthchecksApi } from '../api.js';
 import { checkIdOf, normalizeCheck, type Check } from '../check.js';
-import { budgetedJsonResult, errorResult, run, textResult } from '../result.js';
+import { budgetedJsonResult, errorResult, run } from '../result.js';
 
 /**
  * Notification integrations a check gets when the caller names none.
@@ -164,7 +161,8 @@ function scheduleConflict(input: CommonInput): string | undefined {
 export function registerWriteTools(
   server: McpServer,
   api: HealthchecksApi,
-  confirmations: ConfirmationStore
+  confirmations: ConfirmationStore,
+  approval: Approver
 ): void {
   server.registerTool(
     'create_check',
@@ -278,32 +276,30 @@ export function registerWriteTools(
       // same call is an error rather than a repeat of the same effect.
       annotations: { idempotentHint: false },
     },
-    async ({ check, confirm_token }) =>
+    async ({ check, confirm_token }, mcp) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const resource = setResourceKey('pause_check', [id]);
-
-        if (!confirmations.consume(resource, confirm_token)) {
-          if (confirm_token !== undefined) {
-            return errorResult(
-              'The confirmation token is invalid, expired or was issued for a ' +
-                'different check. Call pause_check without a token to get a new one.'
-            );
-          }
-          const token = confirmations.issue(resource);
-          // Only server-side metadata in this text — never the check's name or
-          // description, which are free text this server does not control.
-          return textResult(
-            confirmationPrompt(
-              `pause check ${id}`,
+        const outcome = await approval.requestApproval(
+          server,
+          mcp,
+          confirmations,
+          {
+            what: `pause check ${id}`,
+            consequence:
               'While paused it raises no alerts, so a job that stops running goes ' +
-                'unnoticed. resume_check reverses it.',
-              'pause_check',
-              token,
-              confirmations.ttlMinutes
-            )
-          );
+              'unnoticed. resume_check reverses it.',
+            resourceKey: setResourceKey('pause_check', [id]),
+            token: confirm_token,
+            toolName: 'pause_check',
+            title: `Pause check ${id}?`,
+            hint: 'Tick to go ahead, leave it to cancel.',
+          }
+        );
+        if (outcome.decision === 'rejected') return errorResult(outcome.reason);
+        if (outcome.decision === 'declined') {
+          return errorResult(`The user declined. pause_check did nothing.`);
         }
+        if (outcome.decision === 'pending') return outcome.result;
 
         const paused = (await api.post(`/checks/${id}/pause`)) as Check;
         return budgetedJsonResult({
@@ -347,30 +343,30 @@ export function registerWriteTools(
       }),
       annotations: { destructiveHint: true, idempotentHint: false },
     },
-    async ({ check, confirm_token }) =>
+    async ({ check, confirm_token }, mcp) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const resource = setResourceKey('delete_check', [id]);
-
-        if (!confirmations.consume(resource, confirm_token)) {
-          if (confirm_token !== undefined) {
-            return errorResult(
-              'The confirmation token is invalid, expired or was issued for a ' +
-                'different check. Call delete_check without a token to get a new one.'
-            );
-          }
-          const token = confirmations.issue(resource);
-          return textResult(
-            confirmationPrompt(
-              `permanently delete check ${id}`,
+        const outcome = await approval.requestApproval(
+          server,
+          mcp,
+          confirmations,
+          {
+            what: `permanently delete check ${id}`,
+            consequence:
               'The UUID cannot be recovered, and anything still pinging that URL ' +
-                'will fail. Consider pause_check instead.',
-              'delete_check',
-              token,
-              confirmations.ttlMinutes
-            )
-          );
+              'will fail. Consider pause_check instead.',
+            resourceKey: setResourceKey('delete_check', [id]),
+            token: confirm_token,
+            toolName: 'delete_check',
+            title: `Permanently delete check ${id}?`,
+            hint: 'Tick to go ahead, leave it to cancel.',
+          }
+        );
+        if (outcome.decision === 'rejected') return errorResult(outcome.reason);
+        if (outcome.decision === 'declined') {
+          return errorResult(`The user declined. delete_check did nothing.`);
         }
+        if (outcome.decision === 'pending') return outcome.result;
 
         // The API returns the deleted object — the last chance to keep a record
         // of what it was.

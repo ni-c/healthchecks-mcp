@@ -6,7 +6,7 @@ import { ALL_TOOLS, ESSENTIAL_TOOLS, READ_TOOLS } from './tools/catalogue.js';
 
 import { HealthchecksApi } from './api.js';
 import type { Config } from './config.js';
-import { ConfirmationStore } from './confirm.js';
+import { ConfirmationStore, createApproval } from 'mcp-approval';
 import { registerReadTools } from './tools/read.js';
 import { registerWriteTools } from './tools/write.js';
 
@@ -45,6 +45,9 @@ export function createServer(config: Config): McpServer {
 
   const api = new HealthchecksApi(config);
   const confirmations = new ConfirmationStore();
+  // One approver per server: it holds the key that seals the request state
+  // carried out through the client and back.
+  const approval = createApproval({ server: 'healthchecks-mcp' });
 
   const server = new McpServer({
     name: 'healthchecks-mcp',
@@ -59,7 +62,7 @@ export function createServer(config: Config): McpServer {
   // Read-only mode does not register the write tools at all. Rejecting them at
   // call time would still advertise capabilities the server refuses to provide.
   if (!config.readOnly) {
-    registerWriteTools(server, api, confirmations);
+    registerWriteTools(server, api, confirmations, approval);
   }
 
   return server;
