@@ -62,6 +62,50 @@ describe('server', () => {
     }
   });
 
+  it('declares all four annotation hints on every tool', async () => {
+    // Not a style rule. Two of the four default to a *stronger* claim than
+    // silence suggests: the specification gives destructiveHint and
+    // openWorldHint a default of true, so a tool that omits them announces
+    // itself as destructive and open-world. Leaving them out is a statement,
+    // not an abstention — so every tool states all four.
+    stubFetch();
+    const { tools } = await (await connect()).listTools();
+    const hints = [
+      'readOnlyHint',
+      'destructiveHint',
+      'idempotentHint',
+      'openWorldHint',
+    ] as const;
+    for (const tool of tools) {
+      for (const hint of hints) {
+        expect(typeof tool.annotations?.[hint], `${tool.name}.${hint}`).toBe(
+          'boolean'
+        );
+      }
+    }
+  });
+
+  it('calls only update_check and delete_check destructive', async () => {
+    // create_check, pause_check and resume_check all used to inherit
+    // destructiveHint: true from the default. Pausing is reversible by
+    // resume_check and creating takes nothing away; warning about them spends
+    // the warning that delete_check needs.
+    stubFetch();
+    const { tools } = await (await connect()).listTools();
+    const byName = new Map(tools.map((t) => [t.name, t.annotations]));
+    expect(byName.get('create_check')?.destructiveHint).toBe(false);
+    expect(byName.get('pause_check')?.destructiveHint).toBe(false);
+    expect(byName.get('resume_check')?.destructiveHint).toBe(false);
+    expect(byName.get('update_check')?.destructiveHint).toBe(true);
+    expect(byName.get('delete_check')?.destructiveHint).toBe(true);
+    // Pausing something already paused leaves it paused. wg-easy said true for
+    // enable/disable while this said false; both now say true.
+    expect(byName.get('pause_check')?.idempotentHint).toBe(true);
+    expect(byName.get('resume_check')?.idempotentHint).toBe(true);
+    // Creating twice gives two checks with two UUIDs.
+    expect(byName.get('create_check')?.idempotentHint).toBe(false);
+  });
+
   it('rejects a path-traversal identifier before any request goes out', async () => {
     const stub = stubFetch();
     const result = await call(await connect(), 'get_check', {

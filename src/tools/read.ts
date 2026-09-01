@@ -39,6 +39,7 @@ import {
 } from '../schema.js';
 
 import { API_KEY_LENGTH, looksReadOnlyKey } from '../config.js';
+import { READ_ONLY } from './annotations.js';
 
 /** Default page size. The API paginates nothing, so every ceiling here is ours. */
 const DEFAULT_LIMIT = 50;
@@ -110,7 +111,7 @@ export function registerReadTools(
           .describe('Filtered client-side; the API has no status filter.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
       }),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async ({ tag, slug, status, limit }) =>
       run(async () => {
@@ -145,7 +146,7 @@ export function registerReadTools(
         'the keyword filters. Accepts a UUID, or the unique_key that a ' +
         'read-only API key returns in place of one.',
       inputSchema: z.object({ check: checkIdParam }),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async ({ check }) =>
       run(async () => {
@@ -171,7 +172,7 @@ export function registerReadTools(
         type: pingTypeParam.optional().describe('Filtered client-side.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
       }),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async ({ check, type, limit }) =>
       run(async () => {
@@ -206,7 +207,7 @@ export function registerReadTools(
         'failed. Truncated at 64 KB. ' +
         NEEDS_READ_WRITE_KEY,
       inputSchema: z.object({ check: uuidParam, n: pingNumberParam }),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async ({ check, n }) =>
       run(async () => {
@@ -263,7 +264,7 @@ export function registerReadTools(
         end: unixTimeParam.optional().describe('Only flips older than this.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
       }),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async ({ check, seconds, start, end, limit }) =>
       run(async () => {
@@ -300,7 +301,7 @@ export function registerReadTools(
         'Integrations themselves can only be created in the web UI. ' +
         NEEDS_READ_WRITE_KEY,
       inputSchema: z.object({}),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async () =>
       run(async () => {
@@ -324,7 +325,7 @@ export function registerReadTools(
         'for the project as a whole. The plain variants treat a check in its ' +
         'grace period as up; the ones suffixed 3 report up, late and down separately.',
       inputSchema: z.object({}),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async () =>
       run(async () => {
@@ -346,7 +347,7 @@ export function registerReadTools(
         'database is answering. Needs no API key, so it is the tool to try first ' +
         'when something is not working.',
       inputSchema: z.object({}),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async () =>
       run(async () => {
@@ -377,7 +378,7 @@ export function registerReadTools(
         'list_pings, get_ping_body and list_integrations can be used at all, and ' +
         'whether checks are identified by uuid or by unique_key.',
       inputSchema: z.object({}),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY,
     },
     async () =>
       run(async () => {

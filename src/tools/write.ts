@@ -184,7 +184,14 @@ export function registerWriteTools(
           ),
         unique: uniqueParam.optional(),
       }),
-      annotations: { idempotentHint: false },
+      annotations: {
+        // Additive: it brings a check into existence and takes nothing away.
+        // Not idempotent — calling it twice gives you two checks with two UUIDs.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     async ({ channels, unique, ...input }) =>
       run(async () => {
@@ -232,7 +239,14 @@ export function registerWriteTools(
         ...commonFields,
         channels: channelsParam.optional(),
       }),
-      annotations: { idempotentHint: true },
+      annotations: {
+        // Destructive in the sense that matters: the fields it is given replace
+        // what was there, and Healthchecks keeps no history of the old values.
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ check, channels, ...input }) =>
       run(async () => {
@@ -274,7 +288,16 @@ export function registerWriteTools(
       // Not idempotent, despite pausing an already-paused check being a no-op
       // upstream: the confirmation token is single-use, so repeating the exact
       // same call is an error rather than a repeat of the same effect.
-      annotations: { idempotentHint: false },
+      annotations: {
+        // Not destructive — resume_check puts it back, and nothing is lost in
+        // between. Idempotent: pausing an already paused check leaves it paused.
+        // It said false before, while wg-easy said true for the same shape of
+        // operation; this is the answer both now give.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ check, confirm_token }, mcp) =>
       run(async () => {
@@ -319,7 +342,14 @@ export function registerWriteTools(
       inputSchema: z.object({ check: uuidParam }),
       // The second call answers 409 rather than repeating the first, so this is
       // not a no-op to retry blindly.
-      annotations: { idempotentHint: false },
+      annotations: {
+        // The reverse of pause_check, and it restores service rather than
+        // removing it.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ check }) =>
       run(async () => {
@@ -341,7 +371,15 @@ export function registerWriteTools(
         check: uuidParam,
         confirm_token: confirmTokenParam.optional(),
       }),
-      annotations: { destructiveHint: true, idempotentHint: false },
+      annotations: {
+        // Idempotent by the specification's wording — "no additional effect on
+        // its environment". The second call answers 404, but the world is the
+        // same either way, which is what lets a client retry after a timeout.
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ check, confirm_token }, mcp) =>
       run(async () => {
