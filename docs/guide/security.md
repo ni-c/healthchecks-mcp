@@ -38,20 +38,37 @@ never executed — and since this same server hands the model ping bodies writte
 whatever pings the check, that would close a loop from untrusted text to falsified
 monitoring. There is no such tool, so there is no such loop.
 
-## Confirmation tokens
+## The confirmation, honestly
 
-`pause_check` and `delete_check` do not take a boolean. The first call returns a
-random 32-hex token with a five-minute lifetime, single-use, bound to a SHA-256
-fingerprint of *this operation on this check*; only a second call carrying it acts.
+One tool asks a person before it acts: `delete_check`. Where the MCP client supports
+elicitation that is a **dialog** shown to whoever is sitting there — the model cannot
+answer it on their behalf, and nothing happens until an answer comes back.
 
 A boolean could be set on the very first call, including by a model that read an
-instruction telling it to. A token that has only ever appeared in a previous tool
-result cannot be guessed, and a token issued for pausing check A will not delete
-check A, nor pause check B.
+instruction telling it to.
 
-The prompt that carries the token quotes **no** name, description or tag from
-Healthchecks. Those are free text this server does not control and that text is
-read by a model.
+Where the client cannot show a dialog, the tool falls back to a random 32-hex token
+with a five-minute lifetime, single-use, bound to a SHA-256 fingerprint of *this
+operation on this check*. Be clear about what that proves, because this server is:
+**the call was made twice with the same arguments, and nothing more.** A model can
+read the token out of the first result and quote it back in the same turn. The
+fallback text says so rather than implying somebody approved, and names whether it
+was the client that could not be asked or the operator who switched the dialog off
+with `ELICITATION=false`.
+
+::: info `pause_check` used to be gated, and is not any more
+Pausing switches alerting off, which is quiet rather than loud — but `resume_check`
+puts it back and nothing is lost in between. A dialog in front of a reversible state
+change is how people learn to tick without reading, and that attention is what
+`delete_check` needs. What pausing costs is stated in the tool's description
+instead.
+:::
+
+The prompt quotes **no** name, description or tag from Healthchecks. Those are free
+text this server does not control and that text is read by a model.
+
+See [Asking a person](/guide/approval) for what the dialog contains, which clients
+show one, and what `ELICITATION=false` does and does not change.
 
 ## Untrusted content
 

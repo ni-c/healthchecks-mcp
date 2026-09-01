@@ -72,6 +72,7 @@ check that alerts nobody.
 | `HEALTHCHECKS_ALLOW_TOOLS`  | no       | Comma-separated tool names, `list_*` prefixes, or `essential` for a curated preset                    |
 | `HEALTHCHECKS_DENY_TOOLS`   | no       | Same syntax; removed from whatever `HEALTHCHECKS_ALLOW_TOOLS` left                                    |
 | `HEALTHCHECKS_INSECURE_TLS` | no       | `true` accepts self-signed certificates (scoped to this connection)                                   |
+| `ELICITATION`               | no       | `false` replaces the approval dialog with the two-call token. **Not prefixed**                        |
 
 `HEALTHCHECKS_URL` is the site root, not the API root: `https://hc.example.net`,
 not `https://hc.example.net/api/v3`. Both are accepted — the suffix is trimmed —
@@ -186,7 +187,7 @@ Write tools are registered unless `HEALTHCHECKS_READ_ONLY=true`.
 | ----------------- | --------------------------------------------------------------------------------------------------------- |
 | `create_check`    | Creates a check. Notifies every integration unless `channels` says otherwise                              |
 | `update_check`    | Changes the given fields. `channels` replaces the list rather than adding to it; an empty list is refused |
-| `pause_check` 👤  | Stops the check expecting pings — and alerting                                                            |
+| `pause_check`     | Stops the check expecting pings — and alerting. `resume_check` puts it back                               |
 | `resume_check`    | Puts a paused check back into the `new` state                                                             |
 | `delete_check` 👤 | Deletes a check. The UUID is not recoverable                                                              |
 
@@ -206,10 +207,14 @@ Write tools are registered unless `HEALTHCHECKS_READ_ONLY=true`.
 
 ## Safety
 
-- **`pause_check` and `delete_check` are two-step.** The first call returns a
-  short-lived confirmation token bound to that exact check and that exact
-  operation; only a second call carrying that token acts. A model cannot satisfy
-  this gate on its own, and a pause token is not a delete token.
+- **`delete_check` asks a person.** Where the client supports MCP elicitation it
+  raises a real dialog that the model cannot answer on its behalf; where it does
+  not, it falls back to a short-lived token bound to that exact check and that
+  exact operation, and says so rather than implying somebody approved.
+  `pause_check` is deliberately not asked about — `resume_check` puts it back and
+  nothing is lost in between, and a dialog in front of a reversible change is how
+  people learn to tick without reading. See
+  [Asking a person](https://healthchecks-mcp.ni-c.de/guide/approval).
 - **Confirmation prompts never quote content from Healthchecks** — a check's name
   and description are free text this server does not control, and that text is
   read by a model.

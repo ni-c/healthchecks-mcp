@@ -175,73 +175,37 @@ describe('update_check', () => {
 });
 
 describe('pause_check', () => {
-  it('hands back a token first and touches nothing', async () => {
-    // Pausing switches alerting off; a job that then stops running is never
-    // reported. That is worth a second call.
-    const stub = stubFetch();
-    const result = await call(await connect(), 'pause_check', {
-      check: CHECK_UUID,
-    });
-    expect(stub.calls).toHaveLength(0);
-    expect(textOf(result)).toMatch(/raises no alerts/);
-    expect(tokenOf(result)).toMatch(/^[0-9a-f]{32}$/);
-  });
-
-  it('pauses on the second call and says alerting is off', async () => {
-    stubFetch();
-    const client = await connect();
-    const token = tokenOf(
-      await call(client, 'pause_check', { check: CHECK_UUID })
-    );
-
+  it('pauses straight away, without asking', async () => {
+    // Deliberately no guard. resume_check puts it back and nothing is lost in
+    // between, and a dialog in front of a reversible state change is how people
+    // learn to tick without reading — which spends the attention delete_check
+    // needs. What pausing does cost is stated in the description instead: a job
+    // that stops running goes unnoticed while the check is paused.
     const stub = stubFetch({
       [`POST /checks/${CHECK_UUID}/pause`]: {
         json: checkFixture({ status: 'paused' }),
       },
     });
+    const client = await connect(undefined, 'accept');
     const result = jsonOf(
-      await call(client, 'pause_check', {
-        check: CHECK_UUID,
-        confirm_token: token,
-      })
+      await call(client, 'pause_check', { check: CHECK_UUID })
     );
+    expect(client.prompts).toHaveLength(0);
     expect(stub.calls[0]?.method).toBe('POST');
     expect(String(result.note)).toMatch(/Alerting is off/);
   });
 
-  it('refuses a token issued for a different check', async () => {
-    const stub = stubFetch();
+  it('takes no confirm_token at all', async () => {
+    // Not merely unguarded: the parameter is gone from the schema, so a caller
+    // that still sends one is told rather than quietly ignored.
     const client = await connect();
-    const token = tokenOf(
-      await call(client, 'pause_check', { check: CHECK_UUID })
-    );
-    const result = await call(client, 'pause_check', {
-      check: OTHER_UUID,
-      confirm_token: token,
-    });
-    expect(result.isError).toBe(true);
-    expect(stub.calls).toHaveLength(0);
-  });
-
-  it('refuses to replay a token that was already used', async () => {
-    stubFetch({
-      [`POST /checks/${CHECK_UUID}/pause`]: {
-        json: checkFixture({ status: 'paused' }),
-      },
-    });
-    const client = await connect();
-    const token = tokenOf(
-      await call(client, 'pause_check', { check: CHECK_UUID })
-    );
-    await call(client, 'pause_check', {
-      check: CHECK_UUID,
-      confirm_token: token,
-    });
-    const replay = await call(client, 'pause_check', {
-      check: CHECK_UUID,
-      confirm_token: token,
-    });
-    expect(replay.isError).toBe(true);
+    const { tools } = await client.listTools();
+    const pause = tools.find((tool) => tool.name === 'pause_check');
+    expect(pause).toBeDefined();
+    const properties = (
+      pause!.inputSchema as { properties?: Record<string, unknown> }
+    ).properties;
+    expect(properties && 'confirm_token' in properties).toBe(false);
   });
 });
 
@@ -362,11 +326,13 @@ describe('delete_check', () => {
     expect(String(result.note)).toMatch(/cannot be undone/);
   });
 
-  it('does not accept a pause token for a delete of the same check', async () => {
+  it('does not accept a token issued for a different check', async () => {
+    // The approval names the operation *and* the target. Only delete_check is
+    // guarded now, so a token from one check is the case left to prove.
     const stub = stubFetch();
     const client = await connect();
     const token = tokenOf(
-      await call(client, 'pause_check', { check: CHECK_UUID })
+      await call(client, 'delete_check', { check: OTHER_UUID })
     );
     const result = await call(client, 'delete_check', {
       check: CHECK_UUID,

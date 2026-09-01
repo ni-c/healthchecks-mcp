@@ -30,7 +30,7 @@ features:
   - title: Only the tools you want
     details: 'HEALTHCHECKS_READ_ONLY=true registers the read tools and nothing else. HEALTHCHECKS_ALLOW_TOOLS cuts finer — essential for a curated handful, your own comma-separated list, or a whole family with list_* — and HEALTHCHECKS_DENY_TOOLS subtracts. Whatever is filtered out does not exist on the protocol rather than failing when called, and a name that matches no tool stops the server at startup instead of quietly going missing.'
   - title: Safe by default
-    details: Destructive tools need a server-issued confirmation token, upstream content is marked untrusted, and read-only mode simply does not register the write tools.
+    details: 'delete_check asks a person first, through MCP elicitation — a dialog the model cannot answer on its behalf, falling back to a single-use token where the client cannot show one. pause_check deliberately does not ask: resume_check puts it back. Upstream content is marked untrusted, and read-only mode simply does not register the write tools.'
 ---
 
 <figure class="diagram">
@@ -55,7 +55,7 @@ features:
   <rect class="node-accent" x="280" y="60" width="170" height="100" rx="10" />
   <text class="label-title" x="365" y="93" text-anchor="middle">healthchecks-mcp</text>
   <text class="label-muted" x="365" y="113" text-anchor="middle">14 tools, 7 essential</text>
-  <text class="label-muted" x="365" y="133" text-anchor="middle">confirm tokens</text>
+  <text class="label-muted" x="365" y="133" text-anchor="middle">asks a person</text>
 
   <rect class="node" x="550" y="70" width="150" height="80" rx="10" />
   <text class="label-title" x="625" y="103" text-anchor="middle">Healthchecks</text>

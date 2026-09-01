@@ -278,52 +278,29 @@ export function registerWriteTools(
     {
       title: 'Pause check',
       description:
-        'Pauses a check: it stops expecting pings and stops alerting. Two-step — ' +
-        'the first call returns a confirmation token, the second call with that ' +
-        'token performs the pause.',
-      inputSchema: z.object({
-        check: uuidParam,
-        confirm_token: confirmTokenParam.optional(),
-      }),
-      // Not idempotent, despite pausing an already-paused check being a no-op
-      // upstream: the confirmation token is single-use, so repeating the exact
-      // same call is an error rather than a repeat of the same effect.
+        'Pauses a check: it stops expecting pings and stops alerting. ' +
+        'resume_check puts it back, and nothing is lost in between — so this ' +
+        'is not asked about. It does mean a job that stops running goes ' +
+        'unnoticed while the check is paused.',
+      inputSchema: z.object({ check: uuidParam }),
       annotations: {
         // Not destructive — resume_check puts it back, and nothing is lost in
         // between. Idempotent: pausing an already paused check leaves it paused.
         // It said false before, while wg-easy said true for the same shape of
         // operation; this is the answer both now give.
+        //
+        // And no confirmation, for the same reason. A dialog in front of a
+        // reversible state change is how people learn to tick without reading,
+        // which spends the attention that delete_check needs.
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
       },
     },
-    async ({ check, confirm_token }, mcp) =>
+    async ({ check }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const outcome = await approval.requestApproval(
-          server,
-          mcp,
-          confirmations,
-          {
-            what: `pause check ${id}`,
-            consequence:
-              'While paused it raises no alerts, so a job that stops running goes ' +
-              'unnoticed. resume_check reverses it.',
-            resourceKey: setResourceKey('pause_check', [id]),
-            token: confirm_token,
-            toolName: 'pause_check',
-            title: `Pause check ${id}?`,
-            hint: 'Tick to go ahead, leave it to cancel.',
-          }
-        );
-        if (outcome.decision === 'rejected') return errorResult(outcome.reason);
-        if (outcome.decision === 'declined') {
-          return errorResult(`The user declined. pause_check did nothing.`);
-        }
-        if (outcome.decision === 'pending') return outcome.result;
-
         const paused = (await api.post(`/checks/${id}/pause`)) as Check;
         return budgetedJsonResult({
           check: normalizeCheck(paused),
