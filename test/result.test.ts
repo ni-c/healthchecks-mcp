@@ -14,10 +14,15 @@ import {
   untrustedResult,
 } from '../src/result.js';
 
-function textOf(result: {
-  content: { type: string; text?: string }[];
-}): string {
-  return result.content.map((block) => block.text ?? '').join('\n');
+// `run` answers with `CallToolResult | InputRequiredResult`, and only the
+// first half carries `content`. Typing the parameter off `run` itself keeps
+// both halves acceptable — a bare `{ content: … }` shape is one an input
+// request overlaps in no property at all — and the cast then says out loud
+// that every call in this file is on the result half.
+function textOf(result: Awaited<ReturnType<typeof run>>): string {
+  return ((result as { content?: unknown }).content as { text?: string }[])
+    .map((block) => block.text ?? '')
+    .join('\n');
 }
 
 describe('result envelopes', () => {
@@ -36,14 +41,26 @@ describe('result envelopes', () => {
 });
 
 /**
+ * The shape `budgetedUntrustedList` renders. Named rather than left as
+ * `Record<string, never>`: under `noUncheckedIndexedAccess` every field read
+ * off that came back `never | undefined`, so the assertions below could only
+ * have been written with a non-null assertion that says nothing at all.
+ */
+interface RenderedList {
+  checks: unknown[];
+  truncated?: { total: number; shown: number; note?: string };
+  [extra: string]: unknown;
+}
+
+/**
  * The JSON body of a marked result.
  *
  * Every list result carries the untrusted-content preamble now, so the payload
  * no longer starts at character zero. Parsing from the first brace keeps these
  * assertions about the envelope rather than about the marker.
  */
-function jsonAfterMarker(text: string): Record<string, never> {
-  return JSON.parse(text.slice(text.indexOf('{')));
+function jsonAfterMarker(text: string): RenderedList {
+  return JSON.parse(text.slice(text.indexOf('{'))) as RenderedList;
 }
 
 describe('budgetedUntrustedList', () => {
@@ -68,8 +85,8 @@ describe('budgetedUntrustedList', () => {
     const parsed = jsonAfterMarker(rendered);
     expect(rendered.length).toBeLessThanOrEqual(MAX_RESULT_BYTES);
     expect(parsed.checks.length).toBeLessThan(items.length);
-    expect(parsed.truncated.total).toBe(500);
-    expect(parsed.truncated.shown).toBe(parsed.checks.length);
+    expect(parsed.truncated?.total).toBe(500);
+    expect(parsed.truncated?.shown).toBe(parsed.checks.length);
   });
 
   it('names the call that narrows the request', () => {
@@ -84,7 +101,7 @@ describe('budgetedUntrustedList', () => {
         })
       )
     );
-    expect(parsed.truncated.note).toContain('Use tag or slug.');
+    expect(parsed.truncated?.note).toContain('Use tag or slug.');
   });
 
   it('stays parseable even when a single entry is too big for the budget', () => {
@@ -96,7 +113,7 @@ describe('budgetedUntrustedList', () => {
       )
     );
     expect(parsed.checks).toEqual([]);
-    expect(parsed.truncated.total).toBe(1);
+    expect(parsed.truncated?.total).toBe(1);
   });
 
   it('keeps the extra fields the caller passed', () => {

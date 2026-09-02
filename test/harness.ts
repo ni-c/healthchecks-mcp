@@ -21,6 +21,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     apiKey: RW_KEY,
     insecureTls: false,
     readOnly: false,
+    elicitation: true,
     allowTools: undefined,
     denyTools: undefined,
     ...overrides,
