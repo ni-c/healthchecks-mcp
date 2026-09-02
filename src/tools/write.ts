@@ -22,6 +22,7 @@ import {
 import { assertPathSegment, type HealthchecksApi } from '../api.js';
 import { checkIdOf, normalizeCheck, type Check } from '../check.js';
 import { budgetedUntrustedResult, errorResult, run } from '../result.js';
+import { checkRecord, untrustedFields } from '../output-schema.js';
 
 /**
  * Notification integrations a check gets when the caller names none.
@@ -192,6 +193,12 @@ export function registerWriteTools(
         idempotentHint: false,
         openWorldHint: false,
       },
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: checkRecord,
+        channels_applied: z.string(),
+        note: z.string().optional(),
+      }),
     },
     async ({ channels, unique, ...input }) =>
       run(async () => {
@@ -247,6 +254,11 @@ export function registerWriteTools(
         idempotentHint: true,
         openWorldHint: false,
       },
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: checkRecord,
+        note: z.string().optional(),
+      }),
     },
     async ({ check, channels, ...input }) =>
       run(async () => {
@@ -297,6 +309,11 @@ export function registerWriteTools(
         idempotentHint: true,
         openWorldHint: false,
       },
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: checkRecord,
+        note: z.string(),
+      }),
     },
     async ({ check }) =>
       run(async () => {
@@ -327,6 +344,7 @@ export function registerWriteTools(
         idempotentHint: true,
         openWorldHint: false,
       },
+      outputSchema: z.object({ ...untrustedFields, check: checkRecord }),
     },
     async ({ check }) =>
       run(async () => {
@@ -357,6 +375,11 @@ export function registerWriteTools(
         idempotentHint: true,
         openWorldHint: false,
       },
+      outputSchema: z.object({
+        ...untrustedFields,
+        deleted: checkRecord.describe('The record as it was, one last time.'),
+        note: z.string(),
+      }),
     },
     async ({ check, confirm_token }, mcp) =>
       run(async () => {

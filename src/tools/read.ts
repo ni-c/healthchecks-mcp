@@ -22,9 +22,14 @@ import {
   errorResult,
   jsonResult,
   run,
-  textResult,
-  untrustedResult,
+  untrustedTextResult,
 } from '../result.js';
+import {
+  checkRecord,
+  checkSummary,
+  truncationNote,
+  untrustedFields,
+} from '../output-schema.js';
 import {
   checkIdParam,
   limitParam,
@@ -132,6 +137,13 @@ export function registerReadTools(
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
       }),
       annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        checks: z.array(checkSummary),
+        total_in_project: z.number().int(),
+        note: z.string().optional(),
+      }),
     },
     async ({ tag, slug, status, limit }) =>
       run(async () => {
@@ -167,6 +179,7 @@ export function registerReadTools(
         'read-only API key returns in place of one.',
       inputSchema: z.object({ check: checkIdParam }),
       annotations: READ_ONLY,
+      outputSchema: checkRecord.extend(untrustedFields),
     },
     async ({ check }) =>
       run(async () => {
@@ -193,6 +206,15 @@ export function registerReadTools(
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
       }),
       annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        // Left open: a ping record carries `ua`, the raw User-Agent of whoever
+        // pinged, plus whatever fields the instance's release adds.
+        pings: z.array(z.looseObject({})).describe('Newest first.'),
+        returned_by_instance: z.number().int(),
+        note: z.string().optional(),
+      }),
     },
     async ({ check, type, limit }) =>
       run(async () => {
@@ -228,6 +250,19 @@ export function registerReadTools(
         NEEDS_READ_WRITE_KEY,
       inputSchema: z.object({ check: uuidParam, n: pingNumberParam }),
       annotations: READ_ONLY,
+      // The least trusted content this server returns: whoever knows a ping URL
+      // writes this, and a ping URL sits in a cron job on every monitored host.
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: z.string(),
+        ping: z.number().int(),
+        body: z.string(),
+        empty: z.literal(true).optional(),
+        truncated: z
+          .string()
+          .optional()
+          .describe('Present when the body hit the byte cap. Not retrievable.'),
+      }),
     },
     async ({ check, n }) =>
       run(async () => {
@@ -255,16 +290,26 @@ export function registerReadTools(
           throw error;
         }
         if (raw.body.length === 0) {
-          return textResult(`Ping ${n} of check ${id} has an empty body.`);
+          return untrustedTextResult(
+            `Ping ${n} of check ${id} has an empty body.`,
+            { check: id, ping: n, body: '', empty: true }
+          );
         }
         // Whatever pings the check writes this. It is the least trusted content
         // this server returns.
-        return untrustedResult(
-          raw.truncated
-            ? `${raw.body}\n\n[truncated at ${MAX_PING_BODY_BYTES} bytes. ` +
-                'The rest is not retrievable — the API serves a ping body whole ' +
-                'or not at all, so there is no follow-up call for the remainder.]'
-            : raw.body
+        const note = raw.truncated
+          ? `[truncated at ${MAX_PING_BODY_BYTES} bytes. The rest is not ` +
+            'retrievable — the API serves a ping body whole or not at all, so ' +
+            'there is no follow-up call for the remainder.]'
+          : undefined;
+        return untrustedTextResult(
+          note === undefined ? raw.body : `${raw.body}\n\n${note}`,
+          {
+            check: id,
+            ping: n,
+            body: raw.body,
+            ...(note === undefined ? {} : { truncated: note }),
+          }
         );
       })
   );
@@ -285,6 +330,13 @@ export function registerReadTools(
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
       }),
       annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        flips: z.array(z.looseObject({})),
+        returned_by_instance: z.number().int(),
+        note: z.string().optional(),
+      }),
     },
     async ({ check, seconds, start, end, limit }) =>
       run(async () => {
@@ -322,6 +374,13 @@ export function registerReadTools(
         NEEDS_READ_WRITE_KEY,
       inputSchema: z.object({}),
       annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        integrations: z
+          .array(z.looseObject({}))
+          .describe('Each carries the uuid create_check accepts in channels.'),
+      }),
     },
     async () =>
       run(async () => {
@@ -346,6 +405,9 @@ export function registerReadTools(
         'grace period as up; the ones suffixed 3 report up, late and down separately.',
       inputSchema: z.object({}),
       annotations: READ_ONLY,
+      // Left open: the badge document is keyed by tag, and a tag is whatever
+      // somebody typed.
+      outputSchema: z.object({ ...untrustedFields, badges: z.unknown() }),
     },
     async () =>
       run(async () => {
@@ -368,6 +430,21 @@ export function registerReadTools(
         'when something is not working.',
       inputSchema: z.object({}),
       annotations: READ_ONLY,
+      // The marker is *conditional* here, and that is the point. A plain "OK"
+      // is this server's own sentence about its own configuration. Anything
+      // else is up to 4 kB written by whatever answered — which, on this
+      // unauthenticated endpoint, is exactly the case where it may not be
+      // Healthchecks at all: an SSO portal, a captive proxy, a WAF block page.
+      outputSchema: z.object({
+        untrusted: z
+          .literal(true)
+          .optional()
+          .describe('Present only when the instance answered something else.'),
+        source: z.literal('healthchecks').optional(),
+        instance: z.string(),
+        ok: z.boolean().describe('True only when the answer was exactly "OK".'),
+        answer: z.string().describe('Up to 4 kB of whatever replied.'),
+      }),
     },
     async () =>
       run(async () => {
@@ -381,19 +458,32 @@ export function registerReadTools(
         })) as RawResponse;
         const text = raw.body.trim();
         if (text === 'OK') {
-          // The server's own sentence about its own configuration.
-          return textResult(
-            `${api.siteRoot} is reachable and its database is answering.`
-          );
+          // The server's own sentence about its own configuration, and
+          // deliberately *not* marked: the marker has to mean something, and
+          // putting it on this would make it noise.
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `${api.siteRoot} is reachable and its database is answering.`,
+              },
+            ],
+            structuredContent: {
+              instance: api.siteRoot,
+              ok: true,
+              answer: 'OK',
+            },
+          };
         }
         // Anything else is up to 4 KB written by whatever answered — which, on
         // this unauthenticated endpoint, is exactly the case where it may not be
         // Healthchecks at all: an SSO portal, a captive proxy, a WAF block page.
         // Echoing that into a sentence of the server's own was the one place a
         // stranger's text arrived unlabelled.
-        return untrustedResult(
+        return untrustedTextResult(
           `${api.siteRoot} answered the status endpoint with something other ` +
-            `than "OK":\n\n${text}`
+            `than "OK":\n\n${text}`,
+          { instance: api.siteRoot, ok: false, answer: text }
         );
       })
   );
@@ -409,6 +499,24 @@ export function registerReadTools(
         'whether checks are identified by uuid or by unique_key.',
       inputSchema: z.object({}),
       annotations: READ_ONLY,
+      // No untrusted marker: every field is this server's own configuration or
+      // a verdict it reached by probing.
+      outputSchema: z.object({
+        instance: z.string(),
+        api_key: z
+          .string()
+          .optional()
+          .describe('Only when none is configured.'),
+        note: z.string().optional(),
+        key_length_ok: z.boolean().optional(),
+        prefixed_hcr: z.boolean().optional(),
+        reachable: z.boolean().optional(),
+        accepted: z.boolean().optional(),
+        kind: z.string().optional(),
+        error: z.string().optional(),
+        checks_identified_by: z.string().optional(),
+        unavailable_tools: z.array(z.string()).optional(),
+      }),
     },
     async () =>
       run(async () => {

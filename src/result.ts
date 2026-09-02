@@ -33,8 +33,19 @@ export function textResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text }] };
 }
 
-export function jsonResult(data: unknown): CallToolResult {
-  return textResult(JSON.stringify(data, null, 2));
+/**
+ * An answer in both channels at once.
+ *
+ * `structuredContent` is the machine-readable half and the reason every tool
+ * here declares an `outputSchema`; the text block stays because the SDK does
+ * NOT synthesize one for an object-shaped value, and a client that reads only
+ * `content` would otherwise get an empty answer. Both carry the same object.
+ */
+export function jsonResult(data: Record<string, unknown>): CallToolResult {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    structuredContent: data,
+  };
 }
 
 export function errorResult(text: string): CallToolResult {
@@ -50,8 +61,43 @@ const UNTRUSTED_PREAMBLE =
  * have written — check names, descriptions, and above all logged ping bodies —
  * is data, not instructions, and the model needs to be told so explicitly.
  */
-export function untrustedResult(text: string): CallToolResult {
-  return textResult(`${UNTRUSTED_PREAMBLE}${text}`);
+export function untrustedResult(data: Record<string, unknown>): CallToolResult {
+  // The marker goes in both channels. A client that reads `structuredContent`
+  // and ignores `content` — which is the point of declaring an output schema —
+  // would otherwise get a ping body chosen by whoever knows a ping URL, with no
+  // framing at all. The two names are stripped from the payload before they are
+  // set, so the guard cannot be switched off by the content it guards against.
+  const { untrusted: _untrusted, source: _source, ...rest } = data;
+  const value = {
+    untrusted: true as const,
+    source: 'healthchecks' as const,
+    ...rest,
+  };
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `${UNTRUSTED_PREAMBLE}${JSON.stringify(value, null, 2)}`,
+      },
+    ],
+    structuredContent: value,
+  };
+}
+
+/** Untrusted text with no structure of its own — a logged ping body. */
+export function untrustedTextResult(
+  text: string,
+  value: Record<string, unknown>
+): CallToolResult {
+  const { untrusted: _untrusted, source: _source, ...rest } = value;
+  return {
+    content: [{ type: 'text', text: `${UNTRUSTED_PREAMBLE}${text}` }],
+    structuredContent: {
+      untrusted: true as const,
+      source: 'healthchecks' as const,
+      ...rest,
+    },
+  };
 }
 
 export interface BudgetedListOptions {
@@ -88,7 +134,7 @@ export function budgetedUntrustedList(
   items: unknown[],
   options: BudgetedListOptions = {}
 ): CallToolResult {
-  const render = (shown: unknown[]): string => {
+  const render = (shown: unknown[]): Record<string, unknown> => {
     const dropped = items.length - shown.length;
     const envelope: Record<string, unknown> = {};
     if (dropped > 0) {
@@ -103,25 +149,28 @@ export function budgetedUntrustedList(
     }
     envelope[key] = shown;
     Object.assign(envelope, options.extra ?? {});
-    return `${UNTRUSTED_PREAMBLE}${JSON.stringify(envelope, null, 2)}`;
+    return envelope;
   };
+  const text = (envelope: Record<string, unknown>): string =>
+    `${UNTRUSTED_PREAMBLE}${JSON.stringify(envelope, null, 2)}`;
 
   let shown = items;
-  let rendered = render(shown);
-  while (byteLength(rendered) > MAX_RESULT_BYTES && shown.length > 1) {
+  let envelope = render(shown);
+  while (byteLength(text(envelope)) > MAX_RESULT_BYTES && shown.length > 1) {
     shown = shown.slice(0, Math.floor(shown.length / 2));
-    rendered = render(shown);
+    envelope = render(shown);
   }
-  if (byteLength(rendered) > MAX_RESULT_BYTES && shown.length === 1) {
+  if (byteLength(text(envelope)) > MAX_RESULT_BYTES && shown.length === 1) {
     // A single entry that does not fit cannot be halved any further.
-    return textResult(
-      render([]).replace(
-        'were dropped to stay inside the result size budget.',
-        'were dropped; even a single entry exceeds the result size budget.'
-      )
+    const empty = render([]);
+    const note = (empty.truncated as { note: string }).note.replace(
+      'were dropped to stay inside the result size budget.',
+      'were dropped; even a single entry exceeds the result size budget.'
     );
+    (empty.truncated as { note: string }).note = note;
+    return untrustedResult(empty);
   }
-  return textResult(rendered);
+  return untrustedResult(envelope);
 }
 
 /**
@@ -135,8 +184,21 @@ export function budgetedUntrustedList(
  * structure survives and the reader can see what was cut.
  */
 export function budgetedJson(data: unknown): string {
+  return JSON.stringify(budget(data), null, 2);
+}
+
+/**
+ * The same, as a value rather than as text.
+ *
+ * Every tool declares an `outputSchema` and answers with `structuredContent`
+ * beside the text block, and the two have to carry the same thing — so the
+ * shortening happens on the object and the serialization is derived from it.
+ */
+export function budget(data: unknown): Record<string, unknown> {
   let rendered = JSON.stringify(data, null, 2);
-  if (byteLength(rendered) <= MAX_RESULT_BYTES) return rendered;
+  if (byteLength(rendered) <= MAX_RESULT_BYTES) {
+    return data as Record<string, unknown>;
+  }
 
   const copy = structuredClone(data) as Record<string, unknown>;
   const longestStringKey = (): string | undefined =>
@@ -154,22 +216,26 @@ export function budgetedJson(data: unknown): string {
     copy[key] =
       `${value.slice(0, 200)}… (${value.length - 200} more characters omitted)`;
     rendered = JSON.stringify(copy, null, 2);
-    if (byteLength(rendered) <= MAX_RESULT_BYTES) return rendered;
+    if (byteLength(rendered) <= MAX_RESULT_BYTES) return copy;
   }
 
   // Nothing string-shaped left to shorten: the object itself is oversized, and
-  // there is no smaller true answer to give.
-  return JSON.stringify({
-    error:
-      'The response exceeds the result size budget even after shortening its text ' +
-      'fields. This is not a normal Healthchecks object — check what the instance returned.',
-    bytes: byteLength(rendered),
-  });
+  // there is no smaller true answer to give. An error rather than an envelope
+  // of a different shape, which the SDK would refuse against the schema the
+  // tool declares.
+  throw new ResultTooLargeError(
+    'The response exceeds the result size budget even after shortening its ' +
+      'text fields. This is not a normal Healthchecks object — check what the ' +
+      `instance returned (${byteLength(rendered)} bytes).`
+  );
 }
 
-/** {@link budgetedJson}, wrapped with the untrusted-content marker. */
+/** Raised by {@link budget}; `run` turns it into an error result. */
+export class ResultTooLargeError extends Error {}
+
+/** {@link budget}, wrapped with the untrusted-content marker. */
 export function budgetedUntrustedResult(data: unknown): CallToolResult {
-  return untrustedResult(budgetedJson(data));
+  return untrustedResult(budget(data));
 }
 
 const MAX_ERROR_BODY_LENGTH = 2000;
@@ -252,6 +318,9 @@ export async function run(
   try {
     return await fn();
   } catch (error) {
+    if (error instanceof ResultTooLargeError) {
+      return errorResult(error.message);
+    }
     if (error instanceof HealthchecksApiError) {
       const hint = statusHint(error.status);
       return errorResult(

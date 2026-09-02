@@ -14,6 +14,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every tool declares an `outputSchema` and answers with `structuredContent`
+  beside the text block. A client no longer has to parse prose to use a result.
+
+  Every tool that reports anything from the instance carries `untrusted: true`
+  and `source: "healthchecks"` as fields, not only as a preamble in the text —
+  a client that reads the structured half would otherwise get a logged ping
+  body, written by whoever knows a ping URL, with no framing at all.
+  `get_api_key_info` is without it, and `get_status` carries it only when the
+  instance answered something other than `OK`. That conditional is the point:
+  a plain `OK` is this server's own sentence, and a marker on everything is a
+  marker that means nothing.
+
+  Fields this server builds are described exactly; a check record is left open,
+  because `normalizeCheck` passes through whatever a self-hosted release chose
+  to add and the SDK validates every result against its schema before it goes
+  out.
+
+### Changed
+
+- A result too large to shorten is now an error rather than an envelope saying
+  so. The envelope was a different shape from what the tool declares it
+  returns, which the SDK refuses.
+
+- The two-call `confirm_token` prompt is an error result. The check was not
+  deleted, which is what `isError` says — and a tool that declares an output
+  schema may not answer without `structuredContent` unless the result is an
+  error. The text is unchanged and still carries the token.
+
 ### Security
 
 - **Text written by strangers came back unmarked.** `get_ping_body` carried the

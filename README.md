@@ -191,6 +191,32 @@ Write tools are registered unless `HEALTHCHECKS_READ_ONLY=true`.
 | `resume_check`    | Puts a paused check back into the `new` state                                                             |
 | `delete_check` 👤 | Deletes a check. The UUID is not recoverable                                                              |
 
+### Structured output
+
+Every tool declares an `outputSchema` and answers with `structuredContent`
+alongside the text block, so a client can use the result without parsing prose:
+
+```jsonc
+{
+  "untrusted": true,
+  "source": "healthchecks",
+  "checks": [{ "id": "…", "name": "Nightly Backup", "status": "up" }],
+  "total_in_project": 12,
+}
+```
+
+Every tool that reports anything from the instance carries `untrusted: true`
+and `source: "healthchecks"` as fields — a check name, a description and above
+all a logged ping body are written by whoever pinged, and a ping URL sits in a
+cron job on every monitored host. `get_api_key_info` is without it, and
+`get_status` carries it **only** when the instance answered something other than
+`OK`: a plain `OK` is this server's own sentence, and a marker on everything is
+a marker that means nothing.
+
+Fields this server builds are described exactly; a check record is left open,
+because `normalizeCheck` passes through whatever a self-hosted release chose to
+add and the SDK validates every result against its schema before it goes out.
+
 ## Not exposed, on purpose
 
 - **Pinging.** The server never calls a ping URL. Pinging is how a job says it

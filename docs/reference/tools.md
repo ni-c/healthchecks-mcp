@@ -8,6 +8,13 @@ All of them are registered unless you say otherwise. `HEALTHCHECKS_ALLOW_TOOLS` 
 selects the ones marked **essential** below — see
 [choosing the tools that load](/guide/configuration#choosing-the-tools-that-load).
 
+Every tool declares an `outputSchema` and answers with `structuredContent` beside
+the text block, so a client can use a result without parsing prose. Every tool
+that reports anything from the instance carries `untrusted: true` and
+`source: "healthchecks"` as fields of that object — `get_api_key_info` is
+without it, and `get_status` carries it only when the instance answered
+something other than `OK`.
+
 Three markers recur:
 
 - 👤 **asks a person** — through MCP elicitation, a dialog the model cannot answer

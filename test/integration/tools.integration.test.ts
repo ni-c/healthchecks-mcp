@@ -1,4 +1,5 @@
 import {
+  expectEveryToolDeclaresOutputSchema,
   expectEveryToolExercised,
   startServer,
   toolCoverage,
@@ -253,7 +254,14 @@ describe('the confirmation, both ways round', () => {
   });
 
   it('deletes only after the token comes back, with no dialog', async () => {
-    const refusal = await plain.call('delete_check', { check: uuid });
+    // An error result: the check was not deleted, which is what `isError`
+    // says — and a tool that declares an `outputSchema` may not answer without
+    // `structuredContent` unless the result is an error.
+    const refusal = await plain.call(
+      'delete_check',
+      { check: uuid },
+      { expectError: /confirm_token=/ }
+    );
     expect(refusal).toContain('confirm_token');
     expect(plain.prompts).toHaveLength(0);
     await plain.call('get_check', { check: uuid });
@@ -269,6 +277,15 @@ describe('the confirmation, both ways round', () => {
     expect(plain.prompts).toHaveLength(0);
     expect(readOnly.prompts).toHaveLength(0);
   });
+});
+
+it('declares an output schema on every tool', async () => {
+  // The unit suite checks the same thing against a stub. Here it is checked
+  // against the server that has just answered every one of these tools against
+  // a real Healthchecks — and each of those answers went through the SDK's
+  // validation against the schema below it.
+  const { tools } = await asking.client.listTools();
+  expectEveryToolDeclaresOutputSchema(tools);
 });
 
 it('exercises every tool in the catalogue', () => {
