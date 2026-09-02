@@ -203,12 +203,21 @@ describe('what a read-only key cannot do', () => {
       // The uuid comes from the read-write harness on purpose: a read-only key
       // cannot produce one, so this is the only way to get past the schema and
       // reach the 401 the message is about.
+      //
+      // The expectation names the sentence, not the word "read-only". That
+      // word also appears in `statusHint(401)` — "Most often this key is
+      // read-only and the endpoint needs a read-write one" — which `run()`
+      // appends to *any* 401. So `expectError: true` plus a `read-only`
+      // substring was satisfiable with the translation deleted outright: the
+      // raw error would have carried the phrase anyway, and this test would
+      // have stayed green while the assurance in the comment above it was gone.
+      // This sentence exists only in `ReadWriteKeyRequiredError`.
       const refused = await readOnly.call(
         tool,
         tool === 'list_integrations' ? {} : { check: uuid, n: 1 },
-        { expectError: true }
+        { expectError: `${tool} needs a read-write Healthchecks API key` }
       );
-      expect(refused).toContain('read-only');
+      expect(refused).toContain('Nothing is wrong with the key itself');
     }
   );
 });
@@ -233,10 +242,13 @@ describe('the confirmation, both ways round', () => {
     // ever names the check as well, this assertion should be the thing that
     // notices.
     expect(asking.prompts.join('\n')).toContain(throwaway.check.uuid);
+    // `expectError: true` alone would be met by a timeout, a 429 or a renamed
+    // parameter just as well as by the 404 that means the check is really gone,
+    // which is the only thing this line is here to establish.
     await asking.call(
       'get_check',
       { check: throwaway.check.uuid },
-      { expectError: true }
+      { expectError: 'HTTP 404' }
     );
   });
 
@@ -250,7 +262,7 @@ describe('the confirmation, both ways round', () => {
       check: uuid,
       confirm_token: tokenOf(refusal),
     });
-    await plain.call('get_check', { check: uuid }, { expectError: true });
+    await plain.call('get_check', { check: uuid }, { expectError: 'HTTP 404' });
   });
 
   it('asked nobody on the harness without one', () => {

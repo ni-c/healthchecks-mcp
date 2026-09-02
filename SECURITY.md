@@ -52,5 +52,61 @@ off.
 `pause_check` is deliberately **not** guarded: `resume_check` puts it back and
 nothing is lost in between.
 
-Data returned from the upstream API is untrusted input: it is marked as such, and
-confirmation prompts never quote it.
+### Binding is not freshness
+
+`mcp-approval` seals the request state it carries out through the client and back
+(HMAC, via the SDK's `createRequestStateCodec`), and that seal proves **binding**: a
+reply whose state does not open, or opens onto a different resource key, is treated as
+no answer at all. It does not prove **freshness** — nothing in it says an answer has
+not been used before. Within the state's lifetime, a replayed approval for the _same_
+operation on the _same_ check is indistinguishable from the original.
+
+For this server that is currently unreachable rather than merely unlikely, and the
+reason is worth writing down because it will change:
+
+- The sealed `requestState` only travels over the wire on protocol revision
+  `2026-07-28`, where the person's answer comes back as `inputResponses` on a retry.
+- The SDK pinned here (`@modelcontextprotocol/server` 2.x) reports
+  `LATEST_PROTOCOL_VERSION = "2025-11-25"` and
+  `SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26",
+"2024-11-05", "2024-10-07"]`. `2026-07-28` is not among them.
+- On a `2025-11-25` connection the SDK bridges the elicitation server-side: the
+  question and the answer never leave the process, so there is no token to replay.
+
+The fallback path has an answer of its own regardless: `ConfirmationStore` tokens are
+single-use and spent on consumption, which the integration suite pins by deleting a
+check and then failing to delete it again with the same token.
+
+So there is **no anti-replay mechanism here, deliberately** — building one against a
+path that does not exist would be untestable code guarding nothing. What this section
+is for: when this server starts negotiating `2026-07-28`, the guarantee changes from
+"the answer cannot be replayed" to "the answer cannot be redirected", and
+`delete_check` is the tool that would want the stronger one.
+
+## Everything the instance says is untrusted input
+
+Confirmation prompts never quote upstream content, and every result that carries it
+is prefixed with an explicit marker. That is **every tool except `get_status` on its
+happy path and `get_api_key_info`**, which report on the server's own configuration
+and nothing else.
+
+It was not, before. `get_ping_body` was marked from the start, and the reason given in
+`result.ts` was "above all logged ping bodies" — but the ping _header_ comes through
+the same door as the ping _body_ and had no marker. A ping object carries `ua`, the
+raw User-Agent of whoever pinged the check, kept to 200 characters upstream, together
+with `remote_addr`, `scheme` and `method`. Nothing validates a User-Agent. Whoever
+knows a ping URL sets it freely — and a ping URL is, by design, sitting in a cron job
+on every monitored host, which makes it the most widely-shared secret in the system.
+Fifty pings is roughly ten thousand characters of somebody else's text arriving as if
+the server had said it. The same held for check names and descriptions through
+`list_checks`, for `list_flips` and `list_integrations`, for the badge URLs (which
+carry the project's tags), for every write tool that echoes the check back, and for
+`get_status`, which put up to 4 KB of an unexpected response inside a sentence of its
+own — on the one endpoint that takes no key, and is therefore exactly where something
+that is not Healthchecks answers.
+
+There is deliberately **no unmarked list renderer left in the code**. The plain
+variants were removed rather than left available, because an unmarked variant next to
+a marked one is something to reach for by accident.
+`test/untrusted.test.ts` asserts this over the whole catalogue: every tool must appear
+in its table, and every tool not explicitly excused must return the marker.

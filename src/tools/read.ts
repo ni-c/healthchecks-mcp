@@ -17,8 +17,7 @@ import {
   type Check,
 } from '../check.js';
 import {
-  budgetedJsonResult,
-  budgetedList,
+  budgetedUntrustedList,
   budgetedUntrustedResult,
   errorResult,
   jsonResult,
@@ -73,8 +72,22 @@ const NEEDS_READ_WRITE_KEY =
  * `/pings/<n>/body` answer a read-only key with `401 {"error": "wrong api
  * key"}`. Passing that on would send the reader to re-check a key that is
  * perfectly correct, which is the exact confusion this server exists to remove.
+ *
+ * The translation used to fire on *any* 401, and its message ends "Nothing is
+ * wrong with the key itself." A 401 has at least four causes, and that sentence
+ * is false for three of them: a mistyped or rotated key, a key belonging to a
+ * deleted project, and a ping key pasted in place of an API key. It is also the
+ * first sentence the operator reads, so after a key rotation it sends them to
+ * enter a *second* wrong key and look for the fault where it is not — the exact
+ * confusion this function exists to prevent, pointing the other way.
+ *
+ * So the claim is now checked before it is made. `/checks/` is readable with
+ * either kind of key: if it answers, the key is genuinely accepted and only the
+ * endpoint is out of reach. If it does not, the original 401 goes through with
+ * `statusHint(401)`, which names both possibilities instead of picking one.
  */
 async function needsReadWriteKey<T>(
+  api: HealthchecksApi,
   tool: string,
   call: () => Promise<T>
 ): Promise<T> {
@@ -82,7 +95,8 @@ async function needsReadWriteKey<T>(
     return await call();
   } catch (error) {
     if (error instanceof HealthchecksApiError && error.status === 401) {
-      throw new ReadWriteKeyRequiredError(tool);
+      const accepted = await probe(api, '/checks/');
+      if (accepted.ok) throw new ReadWriteKeyRequiredError(tool);
     }
     throw error;
   }
@@ -127,7 +141,7 @@ export function registerReadTools(
           ? all.filter((check) => check.status === status)
           : all;
         const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
-        return budgetedList('checks', shown.map(summarizeCheck), {
+        return budgetedUntrustedList('checks', shown.map(summarizeCheck), {
           extra: {
             total_in_project: all.length,
             ...(matching.length > shown.length
@@ -183,13 +197,13 @@ export function registerReadTools(
     async ({ check, type, limit }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const body = await needsReadWriteKey('list_pings', () =>
+        const body = await needsReadWriteKey(api, 'list_pings', () =>
           api.get(`/checks/${id}/pings/`)
         );
         const all = listOf(body, 'pings') as Record<string, unknown>[];
         const matching = type ? all.filter((ping) => ping.type === type) : all;
         const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
-        return budgetedList('pings', shown, {
+        return budgetedUntrustedList('pings', shown, {
           extra: {
             returned_by_instance: all.length,
             ...(matching.length > shown.length
@@ -220,7 +234,7 @@ export function registerReadTools(
         const id = assertPathSegment(check, 'check id');
         let raw: RawResponse;
         try {
-          raw = (await needsReadWriteKey('get_ping_body', () =>
+          raw = (await needsReadWriteKey(api, 'get_ping_body', () =>
             api.get(`/checks/${id}/pings/${n}/body`, {
               raw: true,
               maxBytes: MAX_PING_BODY_BYTES,
@@ -247,9 +261,9 @@ export function registerReadTools(
         // this server returns.
         return untrustedResult(
           raw.truncated
-            ? `${raw.body}\n\n[truncated at ${MAX_PING_BODY_BYTES} bytes. The rest is not "
-              + "retrievable — the API serves a ping body whole or not at all, so there is no "
-              + "follow-up call for the remainder.]`
+            ? `${raw.body}\n\n[truncated at ${MAX_PING_BODY_BYTES} bytes. ` +
+                'The rest is not retrievable — the API serves a ping body whole ' +
+                'or not at all, so there is no follow-up call for the remainder.]'
             : raw.body
         );
       })
@@ -283,7 +297,7 @@ export function registerReadTools(
         );
         const all = flipsOf(body);
         const shown = all.slice(0, limit ?? DEFAULT_LIMIT);
-        return budgetedList('flips', shown, {
+        return budgetedUntrustedList('flips', shown, {
           extra: {
             returned_by_instance: all.length,
             ...(all.length > shown.length
@@ -311,11 +325,11 @@ export function registerReadTools(
     },
     async () =>
       run(async () => {
-        const body = await needsReadWriteKey('list_integrations', () =>
+        const body = await needsReadWriteKey(api, 'list_integrations', () =>
           api.get('/channels/')
         );
         const channels = listOf(body, 'channels');
-        return budgetedList('integrations', channels, {
+        return budgetedUntrustedList('integrations', channels, {
           narrowWith:
             'The API offers no filter here; the project has that many integrations.',
         });
@@ -340,7 +354,7 @@ export function registerReadTools(
           body && typeof body === 'object' && 'badges' in body
             ? (body as { badges: unknown }).badges
             : body;
-        return budgetedJsonResult({ badges });
+        return budgetedUntrustedResult({ badges });
       })
   );
 
@@ -366,10 +380,20 @@ export function registerReadTools(
           maxBytes: 4096,
         })) as RawResponse;
         const text = raw.body.trim();
-        return textResult(
-          text === 'OK'
-            ? `${api.siteRoot} is reachable and its database is answering.`
-            : `${api.siteRoot} answered the status endpoint with: ${text}`
+        if (text === 'OK') {
+          // The server's own sentence about its own configuration.
+          return textResult(
+            `${api.siteRoot} is reachable and its database is answering.`
+          );
+        }
+        // Anything else is up to 4 KB written by whatever answered — which, on
+        // this unauthenticated endpoint, is exactly the case where it may not be
+        // Healthchecks at all: an SSO portal, a captive proxy, a WAF block page.
+        // Echoing that into a sentence of the server's own was the one place a
+        // stranger's text arrived unlabelled.
+        return untrustedResult(
+          `${api.siteRoot} answered the status endpoint with something other ` +
+            `than "OK":\n\n${text}`
         );
       })
   );

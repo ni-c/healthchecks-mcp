@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { HealthchecksApiError, ResponseTooLargeError } from '../src/api.js';
 import {
   budgetedJson,
-  budgetedList,
+  budgetedUntrustedList,
   errorResult,
   jsonResult,
   MAX_RESULT_BYTES,
@@ -35,10 +35,24 @@ describe('result envelopes', () => {
   });
 });
 
-describe('budgetedList', () => {
+/**
+ * The JSON body of a marked result.
+ *
+ * Every list result carries the untrusted-content preamble now, so the payload
+ * no longer starts at character zero. Parsing from the first brace keeps these
+ * assertions about the envelope rather than about the marker.
+ */
+function jsonAfterMarker(text: string): Record<string, never> {
+  return JSON.parse(text.slice(text.indexOf('{')));
+}
+
+describe('budgetedUntrustedList', () => {
+  // The only list renderer there is. The unmarked variant was removed with the
+  // finding that every list this server returns is upstream content — leaving
+  // it exported would have left something to reach for by accident.
   it('returns everything when it fits', () => {
-    const parsed = JSON.parse(
-      textOf(budgetedList('checks', [{ a: 1 }, { a: 2 }]))
+    const parsed = jsonAfterMarker(
+      textOf(budgetedUntrustedList('checks', [{ a: 1 }, { a: 2 }]))
     );
     expect(parsed.checks).toHaveLength(2);
     expect(parsed.truncated).toBeUndefined();
@@ -49,9 +63,9 @@ describe('budgetedList', () => {
       id: i,
       filler: 'x'.repeat(500),
     }));
-    const rendered = textOf(budgetedList('checks', items));
+    const rendered = textOf(budgetedUntrustedList('checks', items));
     // The point of dropping items: the answer is still parseable.
-    const parsed = JSON.parse(rendered);
+    const parsed = jsonAfterMarker(rendered);
     expect(rendered.length).toBeLessThanOrEqual(MAX_RESULT_BYTES);
     expect(parsed.checks.length).toBeLessThan(items.length);
     expect(parsed.truncated.total).toBe(500);
@@ -63,16 +77,22 @@ describe('budgetedList', () => {
     const items = Array.from({ length: 400 }, () => ({
       filler: 'y'.repeat(600),
     }));
-    const parsed = JSON.parse(
-      textOf(budgetedList('checks', items, { narrowWith: 'Use tag or slug.' }))
+    const parsed = jsonAfterMarker(
+      textOf(
+        budgetedUntrustedList('checks', items, {
+          narrowWith: 'Use tag or slug.',
+        })
+      )
     );
     expect(parsed.truncated.note).toContain('Use tag or slug.');
   });
 
   it('stays parseable even when a single entry is too big for the budget', () => {
-    const parsed = JSON.parse(
+    const parsed = jsonAfterMarker(
       textOf(
-        budgetedList('checks', [{ filler: 'z'.repeat(MAX_RESULT_BYTES + 10) }])
+        budgetedUntrustedList('checks', [
+          { filler: 'z'.repeat(MAX_RESULT_BYTES + 10) },
+        ])
       )
     );
     expect(parsed.checks).toEqual([]);
@@ -80,8 +100,10 @@ describe('budgetedList', () => {
   });
 
   it('keeps the extra fields the caller passed', () => {
-    const parsed = JSON.parse(
-      textOf(budgetedList('checks', [], { extra: { total_in_project: 7 } }))
+    const parsed = jsonAfterMarker(
+      textOf(
+        budgetedUntrustedList('checks', [], { extra: { total_in_project: 7 } })
+      )
     );
     expect(parsed.total_in_project).toBe(7);
   });
@@ -221,10 +243,10 @@ describe('budgetedJson', () => {
     const items = Array.from({ length: 200 }, () => ({
       name: '汉'.repeat(400),
     }));
-    const rendered = textOf(budgetedList('checks', items));
+    const rendered = textOf(budgetedUntrustedList('checks', items));
     expect(Buffer.byteLength(rendered, 'utf8')).toBeLessThanOrEqual(
       MAX_RESULT_BYTES
     );
-    expect(() => JSON.parse(rendered)).not.toThrow();
+    expect(() => jsonAfterMarker(rendered)).not.toThrow();
   });
 });

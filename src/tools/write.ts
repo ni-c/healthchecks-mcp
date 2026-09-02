@@ -21,7 +21,7 @@ import {
 
 import { assertPathSegment, type HealthchecksApi } from '../api.js';
 import { checkIdOf, normalizeCheck, type Check } from '../check.js';
-import { budgetedJsonResult, errorResult, run } from '../result.js';
+import { budgetedUntrustedResult, errorResult, run } from '../result.js';
 
 /**
  * Notification integrations a check gets when the caller names none.
@@ -208,7 +208,7 @@ export function registerWriteTools(
         if (unique !== undefined) body.unique = unique;
 
         const created = (await api.post('/checks/', body)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           check: normalizeCheck(created),
           channels_applied:
             channels === undefined
@@ -262,7 +262,7 @@ export function registerWriteTools(
         }
 
         const updated = (await api.post(`/checks/${id}`, body)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           check: normalizeCheck(updated),
           ...(channels !== undefined
             ? {
@@ -302,7 +302,7 @@ export function registerWriteTools(
       run(async () => {
         const id = assertPathSegment(check, 'check id');
         const paused = (await api.post(`/checks/${id}/pause`)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           check: normalizeCheck(paused),
           note: 'Alerting is off for this check until resume_check is called.',
         });
@@ -332,7 +332,7 @@ export function registerWriteTools(
       run(async () => {
         const id = assertPathSegment(check, 'check id');
         const resumed = (await api.post(`/checks/${id}/resume`)) as Check;
-        return budgetedJsonResult({ check: normalizeCheck(resumed) });
+        return budgetedUntrustedResult({ check: normalizeCheck(resumed) });
       })
   );
 
@@ -386,7 +386,7 @@ export function registerWriteTools(
         // The API returns the deleted object — the last chance to keep a record
         // of what it was.
         const deleted = (await api.delete(`/checks/${id}`)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           deleted: normalizeCheck(deleted),
           note: `Check ${checkIdOf(deleted) ?? id} is gone. This cannot be undone.`,
         });
