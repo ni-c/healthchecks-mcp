@@ -129,7 +129,7 @@ jobs:
           # Healthchecks moving underneath the server. Allowed to fail without
           # blocking a pull request.
           HEALTHCHECKS_IMAGE: ${{ github.event_name == 'schedule' && 'healthchecks/healthchecks:latest' || '' }}
-        run: docker compose -f test/integration/compose.yml up -d
+        run: docker compose -f test/integration/compose.yml up -d --wait
       - run: npm run test:integration
       - if: failure()
         run: docker compose -f test/integration/compose.yml logs --tail=200

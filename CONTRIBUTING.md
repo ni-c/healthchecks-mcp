@@ -19,7 +19,7 @@ catalogue**.
 
 ```sh
 npm run build     # the suite runs dist/index.js, not src/
-docker compose -f test/integration/compose.yml up -d
+docker compose -f test/integration/compose.yml up -d --wait
 npm run test:integration
 docker compose -f test/integration/compose.yml down -v
 ```

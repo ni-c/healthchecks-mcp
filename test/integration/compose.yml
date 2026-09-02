@@ -65,3 +65,21 @@ services:
           mode: 0o1777
     ports:
       - '127.0.0.1:8000:8000'
+    # The image's own probe, with this stack's timing.
+    #
+    # Only the schedule is wrong upstream, not the check: `retries: 1` on a
+    # 60-second interval means a single miss marks the container unhealthy, and
+    # this one spends its first minute running `manage.py migrate` and the
+    # seeding above before uwsgi is started at all. `up --wait` against that
+    # gives up while the container is still coming up correctly.
+    #
+    # `./fetchstatus.py` rather than a curl or wget one-liner: the image has
+    # neither, and a healthcheck that cannot run reports `unhealthy` for a
+    # service answering perfectly well — which is a slower way of failing than
+    # no healthcheck at all. Relative, like upstream's, because WORKDIR is
+    # /opt/healthchecks and the compose file overrides `command`, not that.
+    healthcheck:
+      test: ['CMD-SHELL', './fetchstatus.py']
+      interval: 3s
+      timeout: 5s
+      retries: 40
