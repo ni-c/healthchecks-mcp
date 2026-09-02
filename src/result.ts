@@ -213,8 +213,14 @@ export function budget(data: unknown): Record<string, unknown> {
     const key = longestStringKey();
     if (key === undefined) break;
     const value = copy[key] as string;
-    copy[key] =
-      `${value.slice(0, 200)}… (${value.length - 200} more characters omitted)`;
+    const shortened = `${value.slice(0, 200)}… (${value.length - 200} more characters omitted)`;
+    // Only when it really is shorter. The note explaining the cut is about
+    // thirty characters, so a 210-character value comes back out at 230 — and
+    // since this pass always takes the longest string over the floor, it would
+    // take the one it had just lengthened, again, for ever. The floor of 200 is
+    // not the guarantee it looks like; this comparison is.
+    if (shortened.length >= value.length) break;
+    copy[key] = shortened;
     rendered = JSON.stringify(copy, null, 2);
     if (byteLength(rendered) <= MAX_RESULT_BYTES) return copy;
   }

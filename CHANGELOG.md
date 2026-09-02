@@ -44,6 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema may not answer without `structuredContent` unless the result is an
   error. The text is unchanged and still carries the token.
 
+### Fixed
+
+- **`budget` could not terminate on an object of many mid-sized fields.** The
+  string pass takes the longest field over a floor of 200 characters and
+  replaces it with 200 characters plus a note saying what was dropped. That note
+  is about thirty characters, so a 210-character value came back out at 230 —
+  still over the floor, still the longest field, and longer than it started. The
+  pass took the same field again every round and the answer grew instead of
+  shrinking. A `get_check` on an instance whose record carried a few thousand
+  such fields hung the tool call rather than answering it.
+
+  A cut is now only made when it really is a cut; when the longest field cannot
+  be shortened profitably, nothing shorter can be either, and the budget says so
+  with the error it already had for that case. The floor of 200 looked like the
+  guarantee and was not one.
+
 ### Security
 
 - **Text written by strangers came back unmarked.** `get_ping_body` carried the

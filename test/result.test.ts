@@ -271,6 +271,24 @@ describe('budgetedJson', () => {
     );
   });
 
+  it('stops shortening once a cut would not be a cut', () => {
+    // The pass takes the longest string over a floor of 200 and replaces it
+    // with 200 characters plus a note saying what was dropped. That note is
+    // about thirty characters, so a 210-character value comes back out at 230:
+    // still over the floor, still the longest, and longer than it started. The
+    // loop took the same field again every round and never returned.
+    //
+    // Nothing here can be shortened profitably, so the answer is the error
+    // below rather than a hang.
+    const record = Object.fromEntries(
+      Array.from({ length: 2000 }, (_, index) => [
+        `field_${index}`,
+        'z'.repeat(210),
+      ])
+    );
+    expect(() => budgetedJson(record)).toThrow(/result size budget/);
+  });
+
   it('caps a budgeted list by bytes as well', () => {
     const items = Array.from({ length: 200 }, () => ({
       name: '汉'.repeat(400),
