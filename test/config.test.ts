@@ -252,6 +252,41 @@ describe('key inspection', () => {
   });
 });
 
+describe('the two booleans, read in opposite directions', () => {
+  it('reads READ_ONLY generously, because it only takes capability away', () => {
+    // Somebody who wrote "True", "1", "yes" or "true " meant the safe thing.
+    // Requiring exactly "true" left every write tool registered on any of
+    // those spellings, silently, in the direction that matters.
+    for (const raw of ['true', 'True', 'TRUE', '1', 'yes', 'YES', ' true ']) {
+      expect(
+        loadConfig(env({ ...complete, HEALTHCHECKS_READ_ONLY: raw })).readOnly,
+        JSON.stringify(raw)
+      ).toBe(true);
+    }
+    for (const raw of ['', 'false', 'no', '0', 'ture', 'on']) {
+      expect(
+        loadConfig(env({ ...complete, HEALTHCHECKS_READ_ONLY: raw })).readOnly,
+        JSON.stringify(raw)
+      ).toBe(false);
+    }
+    expect(loadConfig(env({ ...complete })).readOnly).toBe(false);
+  });
+
+  it('reads INSECURE_TLS exactly, because it weakens the server', () => {
+    for (const raw of ['1', 'yes', 'True', 'TRUE', ' true ']) {
+      expect(
+        loadConfig(env({ ...complete, HEALTHCHECKS_INSECURE_TLS: raw }))
+          .insecureTls,
+        JSON.stringify(raw)
+      ).toBe(false);
+    }
+    expect(
+      loadConfig(env({ ...complete, HEALTHCHECKS_INSECURE_TLS: 'true' }))
+        .insecureTls
+    ).toBe(true);
+  });
+});
+
 describe('a URL carrying more than a site root', () => {
   it('drops a query and a fragment rather than gluing them in front of /api/v3', () => {
     // normalizeSiteRoot only trims slashes and an API suffix, so validating the

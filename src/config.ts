@@ -130,8 +130,18 @@ export function parseElicitation(raw: string | undefined): boolean {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const rawUrl = env.HEALTHCHECKS_URL;
   const apiKey = env.HEALTHCHECKS_API_KEY;
+  // `HEALTHCHECKS_INSECURE_TLS` stays exact on purpose: it *weakens* the
+  // server, so only the one spelling that unambiguously asks for it should do
+  // it.
   const insecureTls = env.HEALTHCHECKS_INSECURE_TLS === 'true';
-  const readOnly = env.HEALTHCHECKS_READ_ONLY === 'true';
+  // `HEALTHCHECKS_READ_ONLY` is the other direction — it only ever takes
+  // capability away — so the fleet form is generous with the spelling. An
+  // operator who wrote `1` or `yes` meant the safe thing, and
+  // `HEALTHCHECKS_READ_ONLY=true ` with a trailing space used to mean the
+  // unsafe one.
+  const readOnly = /^(1|true|yes)$/i.test(
+    env.HEALTHCHECKS_READ_ONLY?.trim() ?? ''
+  );
   const allowTools = env.HEALTHCHECKS_ALLOW_TOOLS;
   const denyTools = env.HEALTHCHECKS_DENY_TOOLS;
 
