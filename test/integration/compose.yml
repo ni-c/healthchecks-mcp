@@ -1,0 +1,85 @@
+# Throwaway Healthchecks for `npm run test:integration`.
+#
+# Not a managed stack: brought up, filled by test/integration/bootstrap.ts, and
+# destroyed with `down -v` afterwards. The suite calls every tool in the
+# catalogue, deletes included, so nothing here may be a check anybody relies on.
+#
+# Bound to 127.0.0.1 only.
+services:
+  healthchecks:
+    # Overridable so the weekly CI run can point at :latest and report drift
+    # without changing what the PR gate tests.
+    image: ${HEALTHCHECKS_IMAGE:-healthchecks/healthchecks:v4.4}
+    # The image **ignores** `SUPERUSER_EMAIL` and `SUPERUSER_PASSWORD` — they
+    # are in plenty of examples on the internet and they create nothing, so
+    # the login form then answers "Incorrect" for an account that was never
+    # made. Healthchecks is a Django application and `manage.py` is its only
+    # headless way in, so the account, the project and both API keys are
+    # created here, before uwsgi starts. Doing it here rather than with
+    # `docker compose exec` from the test keeps the bootstrap free of the
+    # docker CLI, and keeps "how this instance came to exist" in one file.
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        cd /opt/healthchecks
+        ./manage.py migrate --noinput
+        ./manage.py shell -c "
+        from django.contrib.auth.models import User
+        from hc.accounts.models import Profile, Project
+        u, _ = User.objects.get_or_create(username='integration', email='integration@example.net')
+        u.set_password('integration-not-a-secret'); u.is_superuser = True; u.is_staff = True; u.save()
+        Profile.objects.get_or_create(user=u)
+        p, _ = Project.objects.get_or_create(owner=u, name='Integration')
+        p.api_key = 'i' * 32
+        p.api_key_readonly = 'hcr_' + 'r' * 28
+        # Not optional, and the failure is remote from the cause: Healthchecks'
+        # own project-creation flow sets badge_key, and a project without one
+        # makes GET /api/v3/badges/ raise NoReverseMatch — a 500 with an HTML
+        # body, which reads like the endpoint being broken.
+        p.badge_key = str(p.code)
+        p.save()
+        print('project', p.code, 'rw', p.api_key, 'ro', p.api_key_readonly)
+        "
+        exec uwsgi /opt/healthchecks/docker/uwsgi.ini
+    environment:
+      SITE_ROOT: http://127.0.0.1:8000
+      SITE_NAME: Integration
+      DEBUG: 'False'
+      ALLOWED_HOSTS: '*'
+      SECRET_KEY: integration-only-not-a-secret
+      DB: sqlite
+      DB_NAME: /data/hc.sqlite
+      # No outbound mail, and nothing that would try.
+      EMAIL_HOST: ''
+      REGISTRATION_OPEN: 'False'
+    volumes:
+      # The database lives for the length of one run. The long form rather
+      # than the `tmpfs:` shorthand because the mode matters: a tmpfs mounted
+      # with the default 0755 is root-owned, the image runs as a non-root
+      # user, and SQLite then fails with "unable to open database file" while
+      # the container keeps answering 500s.
+      - type: tmpfs
+        target: /data
+        tmpfs:
+          mode: 0o1777
+    ports:
+      - '127.0.0.1:8000:8000'
+    # The image's own probe, with this stack's timing.
+    #
+    # Only the schedule is wrong upstream, not the check: `retries: 1` on a
+    # 60-second interval means a single miss marks the container unhealthy, and
+    # this one spends its first minute running `manage.py migrate` and the
+    # seeding above before uwsgi is started at all. `up --wait` against that
+    # gives up while the container is still coming up correctly.
+    #
+    # `./fetchstatus.py` rather than a curl or wget one-liner: the image has
+    # neither, and a healthcheck that cannot run reports `unhealthy` for a
+    # service answering perfectly well — which is a slower way of failing than
+    # no healthcheck at all. Relative, like upstream's, because WORKDIR is
+    # /opt/healthchecks and the compose file overrides `command`, not that.
+    healthcheck:
+      test: ['CMD-SHELL', './fetchstatus.py']
+      interval: 3s
+      timeout: 5s
+      retries: 40

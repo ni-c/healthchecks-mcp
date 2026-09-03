@@ -466,6 +466,10 @@ describe('what a read-only key really gets back', () => {
     // suggests the key is fine. Relaying it verbatim sends the reader to
     // re-check a key that is correct.
     const routes = {
+      // The claim "nothing is wrong with the key itself" is only true when the
+      // key is in fact accepted somewhere, so the server checks that before
+      // making it. /checks/ is readable with either kind of key.
+      'GET /checks/': { json: { checks: [] } },
       [`GET /checks/${CHECK_UUID}/pings/`]: {
         status: 401,
         json: { error: 'wrong api key' },

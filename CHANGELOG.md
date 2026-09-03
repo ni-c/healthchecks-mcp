@@ -14,6 +14,198 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every tool declares an `outputSchema` and answers with `structuredContent`
+  beside the text block. A client no longer has to parse prose to use a result.
+
+  Every tool that reports anything from the instance carries `untrusted: true`
+  and `source: "healthchecks"` as fields, not only as a preamble in the text —
+  a client that reads the structured half would otherwise get a logged ping
+  body, written by whoever knows a ping URL, with no framing at all.
+  `get_api_key_info` is without it, and `get_status` carries it only when the
+  instance answered something other than `OK`. That conditional is the point:
+  a plain `OK` is this server's own sentence, and a marker on everything is a
+  marker that means nothing.
+
+  Fields this server builds are described exactly; a check record is left open,
+  because `normalizeCheck` passes through whatever a self-hosted release chose
+  to add and the SDK validates every result against its schema before it goes
+  out.
+
+### Changed
+
+- The advertised schemas avoid spellings that are legal JSON Schema and still
+  get a tool refused, or its constraint silently dropped, by some MCP clients:
+  an open object now writes `"additionalProperties": true` rather than the
+  empty schema `{}` zod emits for it; a value that was left untyped is declared
+  as what it really is; and a nullable field is written as `anyOf` branches
+  rather than `"type": ["string", "null"]`, which several clients read as a
+  single type and then drop. What the tools accept and return is unchanged;
+  only the way the schema says so is.
+
+- A result too large to shorten is now an error rather than an envelope saying
+  so. The envelope was a different shape from what the tool declares it
+  returns, which the SDK refuses.
+
+- The two-call `confirm_token` prompt is an error result. The check was not
+  deleted, which is what `isError` says — and a tool that declares an output
+  schema may not answer without `structuredContent` unless the result is an
+  error. The text is unchanged and still carries the token.
+
+### Fixed
+
+- **`budget` could not terminate on an object of many mid-sized fields.** The
+  string pass takes the longest field over a floor of 200 characters and
+  replaces it with 200 characters plus a note saying what was dropped. That note
+  is about thirty characters, so a 210-character value came back out at 230 —
+  still over the floor, still the longest field, and longer than it started. The
+  pass took the same field again every round and the answer grew instead of
+  shrinking. A `get_check` on an instance whose record carried a few thousand
+  such fields hung the tool call rather than answering it.
+
+  A cut is now only made when it really is a cut; when the longest field cannot
+  be shortened profitably, nothing shorter can be either, and the budget says so
+  with the error it already had for that case. The floor of 200 looked like the
+  guarantee and was not one.
+
+### Security
+
+- **Text written by strangers came back unmarked.** `get_ping_body` carried the
+  untrusted-content marker from the start, and `result.ts` gave the reason as
+  "above all logged ping bodies" — but the ping _header_ comes through the same
+  door as the ping _body_ and had no marker at all. A ping object carries `ua`,
+  the raw User-Agent of whoever pinged, kept to 200 characters upstream, plus
+  `remote_addr`, `scheme` and `method`. Nothing validates a User-Agent, and a
+  ping URL is by design sitting in a cron job on every monitored host, so this is
+  the most widely-shared secret in the system. Fifty pings is roughly ten
+  thousand characters of somebody else's text arriving as if the server had said
+  it.
+
+  The same held for check names and descriptions through `list_checks`, for
+  `list_flips`, `list_integrations` and `list_badges` (whose URLs carry the
+  project's tags), for every write tool that echoes the check back, and for
+  `get_status`, which put up to 4 KB of an unexpected response inside a sentence
+  of its own — on the one endpoint that takes no key, and therefore exactly where
+  something that is not Healthchecks answers.
+
+  Every tool now marks its result except `get_api_key_info` and `get_status` on
+  its happy path, which report on the server's own configuration and nothing
+  else. The unmarked renderers were **removed** rather than left available: an
+  unmarked variant sitting next to a marked one is something to reach for by
+  accident. `test/untrusted.test.ts` asserts this over the whole catalogue, so a
+  tool added later cannot skip the decision.
+
+- **A 401 was answered with "Nothing is wrong with the key itself" regardless.**
+  A 401 has at least four causes — a read-only key on a read-write endpoint, a
+  mistyped or rotated key, a key from a deleted project, a ping key pasted in
+  place of an API key — and that sentence is false for three of them. It is also
+  the first thing the operator reads, so after a key rotation it sent them to
+  enter a _second_ wrong key and hunt for the fault where it was not: the exact
+  confusion the translation exists to prevent, pointing the other way. The claim
+  is now checked before it is made, by probing `/checks/`, which either kind of
+  key can read. If that is refused too, the original 401 goes through with the
+  generic hint, which names both possibilities instead of picking one.
+
+### Fixed
+
+- **A truncated ping body ended with its own source code.** The 64 KB truncation
+  note was a single template literal with leftover `" + "` string concatenation
+  inside it, so a body cut at the ceiling ended with a stray quote, a newline,
+  fourteen spaces, `+ "` and then the rest of the sentence.
+
+### Added
+
+- Tools that need a confirmation now **ask the user**, on clients that can show
+  a prompt. The two-call `confirm_token` remains for clients that cannot, so
+  nothing that works today stops working — but where a person can be asked, one
+  is, instead of a token that only proves the same call was made twice.
+
+- `ELICITATION` switches the dialog off — `false` sends a client that could have
+  been asked down the two-call-token path instead. For a scheduled job or a test
+  harness, where a dialog is the wrong shape rather than an unwanted one.
+
+  It does **not** remove the guard: there is no setting in which a guarded call
+  goes unannounced. Two deliberate rough edges come with it. The variable is
+  **not prefixed**, so one `export ELICITATION=false` reaches every MCP server in
+  the environment — which is why a server started with it off prints a line
+  saying so, and why the fallback text names the server instead of blaming a
+  client that was working fine. And a value that is neither `true` nor `false`
+  **stops the server**: it is the only variable here that defaults to _on_, so
+  failing open on a typo would leave the dialog running while the operator
+  believed it was off. It is read after `HEALTHCHECKS_API_KEY` is wiped from the
+  environment, so that exit cannot leave the key behind.
+
+- A `docs/guide/approval.md` page.
+
+- A test that asserts the promise this server would least like to break: every
+  outgoing request, across every tool in the catalogue, starts with
+  `${site}/api/v3/`. Ping URLs live outside that prefix, so a tool that gained
+  the ability to ping — telling a monitoring system a backup succeeded when it
+  did not, silently, because silence is what the system is watching for — would
+  now fail the suite instead of being noticed by nobody. Five separate things
+  held that promise up and none of them were tested.
+
+### Removed
+
+- **`pause_check` no longer asks for a confirmation**, and no longer declares
+  `confirm_token` at all — a caller that still sends one is told rather than
+  quietly ignored.
+
+  Pausing switches alerting off, which is quiet rather than loud, and that was
+  the argument for gating it. But `resume_check` puts it back and nothing is lost
+  in between, and a dialog in front of a reversible state change is how people
+  learn to tick without reading — which spends exactly the attention that
+  `delete_check` needs. What pausing costs is stated in the tool's description
+  instead.
+
+### Changed
+
+- `HEALTHCHECKS_READ_ONLY` now accepts `1`, `true` and `yes` in any case and
+  ignores surrounding whitespace, matching the rest of the family. It only ever
+  takes capability away, so an operator who wrote `HEALTHCHECKS_READ_ONLY=True`
+  meant the safe thing and now gets it — where before that spelling silently left
+  every write tool registered. `HEALTHCHECKS_INSECURE_TLS` stays exactly `true`
+  on purpose: it weakens the server, so only the one unambiguous spelling should
+  do it.
+
+- The shared libraries move to `mcp-approval` 0.7.1, `mcp-tool-allowlist` 0.2.1,
+  `mcp-integration-harness` 0.2.0 and `svg-asset-set` 0.2.0.
+
+- Two integration assertions that could pass without the thing they name. The
+  guard test used `expectError: true` plus a `read-only` substring — but
+  `statusHint(401)` also contains "read-only", and `run()` appends it to any 401,
+  so deleting the translation outright left the test green. Measured: with
+  `needsReadWriteKey` removed the old assertions passed and the new ones fail on
+  all three tools. The two "the check is really gone" checks now require
+  `HTTP 404` rather than any error, which a timeout or a 429 satisfied equally.
+
+- Runs on **MCP SDK 2.0**. Existing clients see the same protocol revision they
+  always did; the change is the package layout behind it, and it is what lets
+  the dialog above work on both protocol eras from one code path — including
+  behind a stateless gateway, where the older mechanism silently fell back to
+  the weaker token for every client.
+
+- The linter is **oxlint** instead of eslint plus typescript-eslint, which
+  lifts the TypeScript ceiling: typescript-eslint pins `typescript` below 6.1,
+  so this repository was held on TypeScript 6 by its linter rather than by its
+  code.
+
+- The tool filter, the confirmation store and the documentation-asset generator
+  now come from **`mcp-tool-allowlist`**, **`mcp-approval`** and
+  **`svg-asset-set`** rather than from copies kept here — 752 fewer lines, and
+  one place to fix each. None of them has a runtime dependency of its own.
+
+- stdio is served through `serveStdio`, so the connection's era is negotiated
+  on the opening exchange rather than assumed. A client that pins the
+  `2026-07-28` era is served it; until now its `server/discover` probe was
+  answered with "Method not found" and only `2025-11-25` was on offer. A client
+  that speaks the older era sees no change — it is still pinned to one instance
+  for the life of the connection, exactly as a hand-wired
+  `StdioServerTransport` served it.
+
+## [Unreleased]
+
 ## [0.1.0] - 2026-08-29
 
 ### Added

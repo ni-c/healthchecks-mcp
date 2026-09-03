@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ALL_TOOLS, READ_TOOLS } from '../src/tools/catalogue.js';
 import { CHECK_UUID, call, connect, stubFetch, textOf } from './harness.js';
+import { expectPortableToolSchemas } from 'mcp-integration-harness';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -60,6 +61,77 @@ describe('server', () => {
       expect(tool.title ?? tool.annotations?.title, tool.name).toBeTruthy();
       expect((tool.description ?? '').length, tool.name).toBeGreaterThan(40);
     }
+  });
+
+  it('declares an output schema on every tool', async () => {
+    // The same argument as the annotations below, one field along. A tool that
+    // says nothing about its result forces a client to parse prose to find out
+    // what it got, and the SDK sends no `structuredContent` at all for a tool
+    // that declared no schema.
+    const { tools } = await (await connect()).listTools();
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.outputSchema, tool.name).toBeDefined();
+      // An object root, not merely a schema. SEP-2106 allows an array or a
+      // scalar, but a 2025-era client is served that same tool with the schema
+      // rewritten to `{result: …}` — so it would answer in two shapes
+      // depending on who asked.
+      expect(tool.outputSchema?.type, tool.name).toBe('object');
+    }
+  });
+
+  it('advertises schemas every client can read', async () => {
+    // Legal JSON Schema is not enough. `{}` in a schema position — what zod
+    // writes for `looseObject`, `catchall` and `z.unknown()` — and `type` as an
+    // array are both refused, or silently dropped, by some clients. Neither is
+    // a contract: each has an equivalent spelling that says the same thing, so
+    // there is nothing here to excuse.
+    const { tools } = await (await connect()).listTools();
+    expectPortableToolSchemas(tools);
+  });
+
+  it('declares all four annotation hints on every tool', async () => {
+    // Not a style rule. Two of the four default to a *stronger* claim than
+    // silence suggests: the specification gives destructiveHint and
+    // openWorldHint a default of true, so a tool that omits them announces
+    // itself as destructive and open-world. Leaving them out is a statement,
+    // not an abstention — so every tool states all four.
+    stubFetch();
+    const { tools } = await (await connect()).listTools();
+    const hints = [
+      'readOnlyHint',
+      'destructiveHint',
+      'idempotentHint',
+      'openWorldHint',
+    ] as const;
+    for (const tool of tools) {
+      for (const hint of hints) {
+        expect(typeof tool.annotations?.[hint], `${tool.name}.${hint}`).toBe(
+          'boolean'
+        );
+      }
+    }
+  });
+
+  it('calls only update_check and delete_check destructive', async () => {
+    // create_check, pause_check and resume_check all used to inherit
+    // destructiveHint: true from the default. Pausing is reversible by
+    // resume_check and creating takes nothing away; warning about them spends
+    // the warning that delete_check needs.
+    stubFetch();
+    const { tools } = await (await connect()).listTools();
+    const byName = new Map(tools.map((t) => [t.name, t.annotations]));
+    expect(byName.get('create_check')?.destructiveHint).toBe(false);
+    expect(byName.get('pause_check')?.destructiveHint).toBe(false);
+    expect(byName.get('resume_check')?.destructiveHint).toBe(false);
+    expect(byName.get('update_check')?.destructiveHint).toBe(true);
+    expect(byName.get('delete_check')?.destructiveHint).toBe(true);
+    // Pausing something already paused leaves it paused. wg-easy said true for
+    // enable/disable while this said false; both now say true.
+    expect(byName.get('pause_check')?.idempotentHint).toBe(true);
+    expect(byName.get('resume_check')?.idempotentHint).toBe(true);
+    // Creating twice gives two checks with two UUIDs.
+    expect(byName.get('create_check')?.idempotentHint).toBe(false);
   });
 
   it('rejects a path-traversal identifier before any request goes out', async () => {

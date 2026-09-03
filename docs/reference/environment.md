@@ -8,9 +8,31 @@
 | `HEALTHCHECKS_ALLOW_TOOLS`  | no       | —                        | Tool names, `list_*` prefixes or `essential`; only these register            |
 | `HEALTHCHECKS_DENY_TOOLS`   | no       | —                        | Same syntax; subtracted from whatever the allow list left                    |
 | `HEALTHCHECKS_INSECURE_TLS` | no       | `false`                  | `true` accepts self-signed certificates, scoped to this connection           |
+| `ELICITATION`               | no       | `true`                   | `false` replaces the approval dialog with the two-call token. **Not prefixed** |
 
-Booleans are the exact string `true`; anything else, including `1` and `TRUE`, is
-false.
+The `HEALTHCHECKS_*` booleans are the exact string `true`; anything else, including
+`1` and `TRUE`, is false. `ELICITATION` is the exception in both directions — see
+below.
+
+## `ELICITATION`
+
+Whether a client that *can* show a dialog is asked before `delete_check` acts.
+Default `true`. `false` takes the two-call-token path instead — it does not remove
+the guard, and a server started with it off prints one line saying so.
+
+Two ways it differs from every other variable here:
+
+- **No prefix.** One `export ELICITATION=false` reaches every MCP server in the same
+  environment, not just this one. That is the point of it and also its risk; see
+  [Asking a person](/guide/approval).
+- **Fatal on anything else.** `1`, `off` or a typo stop the server with exit code 1
+  rather than falling back to the default. It is the only variable of this family
+  that defaults to *on*, and a typo that fell back would leave the dialog running
+  while you believed it was off.
+
+Values are trimmed and matched case-insensitively. It is read *after*
+`HEALTHCHECKS_API_KEY` is deleted from `process.env`, so the fatal path cannot leave
+the key sitting there for a crash reporter.
 
 ## `HEALTHCHECKS_API_KEY`
 

@@ -1,15 +1,7 @@
 import { z } from 'zod';
-
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-
-import { assertPathSegment, type HealthchecksApi } from '../api.js';
-import { checkIdOf, normalizeCheck, type Check } from '../check.js';
-import {
-  confirmationPrompt,
-  setResourceKey,
-  type ConfirmationStore,
-} from '../confirm.js';
-import { budgetedJsonResult, errorResult, run, textResult } from '../result.js';
+import type { McpServer } from '@modelcontextprotocol/server';
+import type { Approver, ConfirmationStore } from 'mcp-approval';
+import { setResourceKey } from 'mcp-approval';
 import {
   channelsParam,
   confirmTokenParam,
@@ -26,6 +18,11 @@ import {
   uniqueParam,
   uuidParam,
 } from '../schema.js';
+
+import { assertPathSegment, type HealthchecksApi } from '../api.js';
+import { checkIdOf, normalizeCheck, type Check } from '../check.js';
+import { budgetedUntrustedResult, errorResult, run } from '../result.js';
+import { checkRecord, untrustedFields } from '../output-schema.js';
 
 /**
  * Notification integrations a check gets when the caller names none.
@@ -165,7 +162,8 @@ function scheduleConflict(input: CommonInput): string | undefined {
 export function registerWriteTools(
   server: McpServer,
   api: HealthchecksApi,
-  confirmations: ConfirmationStore
+  confirmations: ConfirmationStore,
+  approval: Approver
 ): void {
   server.registerTool(
     'create_check',
@@ -177,7 +175,7 @@ export function registerWriteTools(
         `says otherwise, the new check notifies every integration in the project ` +
         '("*"), because a check with no integrations never alerts anyone. ' +
         'Setting unique turns this into an upsert that may UPDATE an existing check.',
-      inputSchema: {
+      inputSchema: z.object({
         ...commonFields,
         channels: channelsParam
           .optional()
@@ -186,8 +184,21 @@ export function registerWriteTools(
               'list of UUIDs or exact names from list_integrations.'
           ),
         unique: uniqueParam.optional(),
+      }),
+      annotations: {
+        // Additive: it brings a check into existence and takes nothing away.
+        // Not idempotent — calling it twice gives you two checks with two UUIDs.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
       },
-      annotations: { idempotentHint: false },
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: checkRecord,
+        channels_applied: z.string(),
+        note: z.string().optional(),
+      }),
     },
     async ({ channels, unique, ...input }) =>
       run(async () => {
@@ -204,7 +215,7 @@ export function registerWriteTools(
         if (unique !== undefined) body.unique = unique;
 
         const created = (await api.post('/checks/', body)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           check: normalizeCheck(created),
           channels_applied:
             channels === undefined
@@ -230,12 +241,24 @@ export function registerWriteTools(
         'exceptions: channels REPLACES the integration list rather than adding ' +
         'to it, and setting schedule on a check that used timeout switches it ' +
         'over. Needs a UUID, which read-only API keys never see.',
-      inputSchema: {
+      inputSchema: z.object({
         check: uuidParam,
         ...commonFields,
         channels: channelsParam.optional(),
+      }),
+      annotations: {
+        // Destructive in the sense that matters: the fields it is given replace
+        // what was there, and Healthchecks keeps no history of the old values.
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
       },
-      annotations: { idempotentHint: true },
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: checkRecord,
+        note: z.string().optional(),
+      }),
     },
     async ({ check, channels, ...input }) =>
       run(async () => {
@@ -251,7 +274,7 @@ export function registerWriteTools(
         }
 
         const updated = (await api.post(`/checks/${id}`, body)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           check: normalizeCheck(updated),
           ...(channels !== undefined
             ? {
@@ -267,47 +290,36 @@ export function registerWriteTools(
     {
       title: 'Pause check',
       description:
-        'Pauses a check: it stops expecting pings and stops alerting. Two-step — ' +
-        'the first call returns a confirmation token, the second call with that ' +
-        'token performs the pause.',
-      inputSchema: {
-        check: uuidParam,
-        confirm_token: confirmTokenParam.optional(),
+        'Pauses a check: it stops expecting pings and stops alerting. ' +
+        'resume_check puts it back, and nothing is lost in between — so this ' +
+        'is not asked about. It does mean a job that stops running goes ' +
+        'unnoticed while the check is paused.',
+      inputSchema: z.object({ check: uuidParam }),
+      annotations: {
+        // Not destructive — resume_check puts it back, and nothing is lost in
+        // between. Idempotent: pausing an already paused check leaves it paused.
+        // It said false before, while wg-easy said true for the same shape of
+        // operation; this is the answer both now give.
+        //
+        // And no confirmation, for the same reason. A dialog in front of a
+        // reversible state change is how people learn to tick without reading,
+        // which spends the attention that delete_check needs.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
-      // Not idempotent, despite pausing an already-paused check being a no-op
-      // upstream: the confirmation token is single-use, so repeating the exact
-      // same call is an error rather than a repeat of the same effect.
-      annotations: { idempotentHint: false },
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: checkRecord,
+        note: z.string(),
+      }),
     },
-    async ({ check, confirm_token }) =>
+    async ({ check }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const resource = setResourceKey('pause_check', [id]);
-
-        if (!confirmations.consume(resource, confirm_token)) {
-          if (confirm_token !== undefined) {
-            return errorResult(
-              'The confirmation token is invalid, expired or was issued for a ' +
-                'different check. Call pause_check without a token to get a new one.'
-            );
-          }
-          const token = confirmations.issue(resource);
-          // Only server-side metadata in this text — never the check's name or
-          // description, which are free text this server does not control.
-          return textResult(
-            confirmationPrompt(
-              `pause check ${id}`,
-              'While paused it raises no alerts, so a job that stops running goes ' +
-                'unnoticed. resume_check reverses it.',
-              'pause_check',
-              token,
-              confirmations.ttlMinutes
-            )
-          );
-        }
-
         const paused = (await api.post(`/checks/${id}/pause`)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           check: normalizeCheck(paused),
           note: 'Alerting is off for this check until resume_check is called.',
         });
@@ -321,16 +333,24 @@ export function registerWriteTools(
       description:
         'Resumes a paused check and puts it back into the "new" state, waiting ' +
         'for its next ping. Fails with HTTP 409 if the check is not paused.',
-      inputSchema: { check: uuidParam },
+      inputSchema: z.object({ check: uuidParam }),
       // The second call answers 409 rather than repeating the first, so this is
       // not a no-op to retry blindly.
-      annotations: { idempotentHint: false },
+      annotations: {
+        // The reverse of pause_check, and it restores service rather than
+        // removing it.
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      outputSchema: z.object({ ...untrustedFields, check: checkRecord }),
     },
     async ({ check }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
         const resumed = (await api.post(`/checks/${id}/resume`)) as Check;
-        return budgetedJsonResult({ check: normalizeCheck(resumed) });
+        return budgetedUntrustedResult({ check: normalizeCheck(resumed) });
       })
   );
 
@@ -342,41 +362,54 @@ export function registerWriteTools(
         'Deletes a check permanently. Its UUID is not recoverable, so every ' +
         'deployed script pinging that URL breaks. Two-step: the first call ' +
         'returns a confirmation token, the second call with that token deletes.',
-      inputSchema: {
+      inputSchema: z.object({
         check: uuidParam,
         confirm_token: confirmTokenParam.optional(),
+      }),
+      annotations: {
+        // Idempotent by the specification's wording — "no additional effect on
+        // its environment". The second call answers 404, but the world is the
+        // same either way, which is what lets a client retry after a timeout.
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
       },
-      annotations: { destructiveHint: true, idempotentHint: false },
+      outputSchema: z.object({
+        ...untrustedFields,
+        deleted: checkRecord.describe('The record as it was, one last time.'),
+        note: z.string(),
+      }),
     },
-    async ({ check, confirm_token }) =>
+    async ({ check, confirm_token }, mcp) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const resource = setResourceKey('delete_check', [id]);
-
-        if (!confirmations.consume(resource, confirm_token)) {
-          if (confirm_token !== undefined) {
-            return errorResult(
-              'The confirmation token is invalid, expired or was issued for a ' +
-                'different check. Call delete_check without a token to get a new one.'
-            );
-          }
-          const token = confirmations.issue(resource);
-          return textResult(
-            confirmationPrompt(
-              `permanently delete check ${id}`,
+        const outcome = await approval.requestApproval(
+          server,
+          mcp,
+          confirmations,
+          {
+            what: `permanently delete check ${id}`,
+            consequence:
               'The UUID cannot be recovered, and anything still pinging that URL ' +
-                'will fail. Consider pause_check instead.',
-              'delete_check',
-              token,
-              confirmations.ttlMinutes
-            )
-          );
+              'will fail. Consider pause_check instead.',
+            resourceKey: setResourceKey('delete_check', [id]),
+            token: confirm_token,
+            toolName: 'delete_check',
+            title: `Permanently delete check ${id}?`,
+            hint: 'Tick to go ahead, leave it to cancel.',
+          }
+        );
+        if (outcome.decision === 'rejected') return errorResult(outcome.reason);
+        if (outcome.decision === 'declined') {
+          return errorResult(`The user declined. delete_check did nothing.`);
         }
+        if (outcome.decision === 'pending') return outcome.result;
 
         // The API returns the deleted object — the last chance to keep a record
         // of what it was.
         const deleted = (await api.delete(`/checks/${id}`)) as Check;
-        return budgetedJsonResult({
+        return budgetedUntrustedResult({
           deleted: normalizeCheck(deleted),
           note: `Check ${checkIdOf(deleted) ?? id} is gone. This cannot be undone.`,
         });

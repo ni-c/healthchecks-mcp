@@ -143,7 +143,8 @@ export const channelsParam = z
     // `.min(1)`, because an empty array serialises to the empty string, which
     // Healthchecks reads as "no integrations at all". That silently turns a
     // monitored check into one that never alerts anyone — the same outcome as
-    // `pause_check`, which this server gates behind a confirmation token.
+    // `pause_check`, except that pausing is visible in the check's status and
+    // this is not.
     // Clearing every integration is deliberately not offered here; the web UI
     // does it, in front of someone who can see what it means.
     z.array(z.string().trim().min(1).max(100)).min(1),

@@ -1,15 +1,25 @@
 # Tools
 
-One section per tool: what it does, its parameters, and — for the guarded ones —
-the two-step confirmation flow.
+One section per tool: what it does, its parameters, and — for the one guarded
+tool — what a person is asked.
 
 All of them are registered unless you say otherwise. `HEALTHCHECKS_ALLOW_TOOLS` and
 `HEALTHCHECKS_DENY_TOOLS` narrow the list to the ones you want, and `essential`
 selects the ones marked **essential** below — see
 [choosing the tools that load](/guide/configuration#choosing-the-tools-that-load).
 
-Two markers recur:
+Every tool declares an `outputSchema` and answers with `structuredContent` beside
+the text block, so a client can use a result without parsing prose. Every tool
+that reports anything from the instance carries `untrusted: true` and
+`source: "healthchecks"` as fields of that object — `get_api_key_info` is
+without it, and `get_status` carries it only when the instance answered
+something other than `OK`.
 
+Three markers recur:
+
+- 👤 **asks a person** — through MCP elicitation, a dialog the model cannot answer
+  on its behalf. Where the client cannot show one, the tool falls back to a
+  two-call `confirm_token`. See [Asking a person](/guide/approval).
 - 🔑 **needs a read-write key** — the tool only reads, but Healthchecks gates the
   endpoint behind a read-write key anyway, and refuses a read-only one with
   `401 "wrong api key"`. The tool says what that really means.
@@ -195,15 +205,15 @@ than sent.
 
 Pauses a check: it stops expecting pings, and stops alerting.
 
-| Parameter       | Type   | Notes                                     |
-| --------------- | ------ | ----------------------------------------- |
-| `check`         | string | UUID                                       |
-| `confirm_token` | string | From the first call of this tool            |
+| Parameter | Type   | Notes |
+| --------- | ------ | ----- |
+| `check`   | string | UUID  |
 
-Two-step. The first call returns a token bound to this operation on this check and
-performs no request at all; the second call with that token pauses. Pausing is
-reversible but quiet — a job that stops running while paused is never reported —
-which is why it is gated at all.
+**Not gated**, and it used to be. `resume_check` puts it back and nothing is lost in
+between; a dialog in front of a reversible state change is how people learn to tick
+without reading, and that attention is what `delete_check` needs. What pausing costs
+is stated in the description instead: while paused, a job that stops running goes
+unnoticed.
 
 ### `resume_check` 🆔
 
@@ -217,7 +227,7 @@ not paused.
 | --------- | ------ | ----- |
 | `check`   | string | UUID  |
 
-### `delete_check` 🆔
+### `delete_check` 👤 🆔
 
 Deletes a check permanently.
 
@@ -226,8 +236,9 @@ Deletes a check permanently.
 | `check`         | string | UUID                            |
 | `confirm_token` | string | From the first call of this tool |
 
-Two-step, and marked destructive to the client. The UUID cannot be recovered and
-no new check can take it, so everything still pinging that URL breaks. The
-confirmation text says so and points at `pause_check` as the reversible
-alternative. The API returns the deleted object, and this tool keeps it in the
+**Asks a person first**, and marked destructive to the client. The UUID cannot be
+recovered and no new check can take it, so everything still pinging that URL breaks.
+The confirmation text says so and points at `pause_check` as the reversible
+alternative. `confirm_token` is only used on the fallback path, where the client
+cannot show a dialog. The API returns the deleted object, and this tool keeps it in the
 result — the last record of what the check was.

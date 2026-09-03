@@ -1,7 +1,5 @@
 import { z } from 'zod';
-
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-
+import type { McpServer } from '@modelcontextprotocol/server';
 import {
   assertPathSegment,
   HealthchecksApiError,
@@ -18,17 +16,21 @@ import {
   summarizeCheck,
   type Check,
 } from '../check.js';
-import { API_KEY_LENGTH, looksReadOnlyKey } from '../config.js';
 import {
-  budgetedJsonResult,
-  budgetedList,
+  budgetedUntrustedList,
   budgetedUntrustedResult,
   errorResult,
   jsonResult,
   run,
-  textResult,
-  untrustedResult,
+  untrustedTextResult,
 } from '../result.js';
+import {
+  checkRecord,
+  checkSummary,
+  record,
+  truncationNote,
+  untrustedFields,
+} from '../output-schema.js';
 import {
   checkIdParam,
   limitParam,
@@ -40,6 +42,9 @@ import {
   unixTimeParam,
   uuidParam,
 } from '../schema.js';
+
+import { API_KEY_LENGTH, looksReadOnlyKey } from '../config.js';
+import { READ_ONLY } from './annotations.js';
 
 /** Default page size. The API paginates nothing, so every ceiling here is ours. */
 const DEFAULT_LIMIT = 50;
@@ -58,7 +63,13 @@ const NEEDS_READ_WRITE_KEY =
   'Note: Healthchecks requires a read-write API key for this endpoint even ' +
   'though it only reads. A read-only key is refused with HTTP 401 "wrong api ' +
   'key", which is not what it sounds like. Call get_api_key_info to check which ' +
-  'kind is configured.';
+  'kind is configured.\n\n' +
+  'With a read-only key this tool cannot even be *called* correctly: it ' +
+  'addresses a check by uuid, and a read-only key never sees one — ' +
+  'list_checks answers with a 40-character unique_key instead. So the refusal ' +
+  'you get first is about the argument, not the key. Neither is a mistake to ' +
+  'fix: with a read-only key this endpoint is out of reach, and there is ' +
+  'nothing to pass that would change it.';
 
 /**
  * Translates the 401 that a read-only key produces on a read-write endpoint.
@@ -67,8 +78,22 @@ const NEEDS_READ_WRITE_KEY =
  * `/pings/<n>/body` answer a read-only key with `401 {"error": "wrong api
  * key"}`. Passing that on would send the reader to re-check a key that is
  * perfectly correct, which is the exact confusion this server exists to remove.
+ *
+ * The translation used to fire on *any* 401, and its message ends "Nothing is
+ * wrong with the key itself." A 401 has at least four causes, and that sentence
+ * is false for three of them: a mistyped or rotated key, a key belonging to a
+ * deleted project, and a ping key pasted in place of an API key. It is also the
+ * first sentence the operator reads, so after a key rotation it sends them to
+ * enter a *second* wrong key and look for the fault where it is not — the exact
+ * confusion this function exists to prevent, pointing the other way.
+ *
+ * So the claim is now checked before it is made. `/checks/` is readable with
+ * either kind of key: if it answers, the key is genuinely accepted and only the
+ * endpoint is out of reach. If it does not, the original 401 goes through with
+ * `statusHint(401)`, which names both possibilities instead of picking one.
  */
 async function needsReadWriteKey<T>(
+  api: HealthchecksApi,
   tool: string,
   call: () => Promise<T>
 ): Promise<T> {
@@ -76,7 +101,8 @@ async function needsReadWriteKey<T>(
     return await call();
   } catch (error) {
     if (error instanceof HealthchecksApiError && error.status === 401) {
-      throw new ReadWriteKeyRequiredError(tool);
+      const accepted = await probe(api, '/checks/');
+      if (accepted.ok) throw new ReadWriteKeyRequiredError(tool);
     }
     throw error;
   }
@@ -94,7 +120,7 @@ export function registerReadTools(
         'Lists the checks in the project the API key belongs to, newest state ' +
         'first. API keys are per project, so this never spans projects. ' +
         'Descriptions are omitted here — call get_check for one.',
-      inputSchema: {
+      inputSchema: z.object({
         tag: z
           .array(tagParam)
           .max(10)
@@ -110,8 +136,15 @@ export function registerReadTools(
           .optional()
           .describe('Filtered client-side; the API has no status filter.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
-      },
-      annotations: { readOnlyHint: true },
+      }),
+      annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        checks: z.array(checkSummary),
+        total_in_project: z.number().int(),
+        note: z.string().optional(),
+      }),
     },
     async ({ tag, slug, status, limit }) =>
       run(async () => {
@@ -121,7 +154,7 @@ export function registerReadTools(
           ? all.filter((check) => check.status === status)
           : all;
         const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
-        return budgetedList('checks', shown.map(summarizeCheck), {
+        return budgetedUntrustedList('checks', shown.map(summarizeCheck), {
           extra: {
             total_in_project: all.length,
             ...(matching.length > shown.length
@@ -145,8 +178,14 @@ export function registerReadTools(
         'Fetches one check with all its fields, including the description and ' +
         'the keyword filters. Accepts a UUID, or the unique_key that a ' +
         'read-only API key returns in place of one.',
-      inputSchema: { check: checkIdParam },
-      annotations: { readOnlyHint: true },
+      inputSchema: z.object({ check: checkIdParam }),
+      annotations: READ_ONLY,
+      // The `meta` again: `extend` builds a new schema and does not carry the
+      // parent's metadata over, so without it this one goes back to spelling
+      // `additionalProperties` as `{}`.
+      outputSchema: checkRecord
+        .extend(untrustedFields)
+        .meta({ additionalProperties: true }),
     },
     async ({ check }) =>
       run(async () => {
@@ -167,23 +206,32 @@ export function registerReadTools(
         '100 pings on a free plan and 1000 on a paid one, and there is no ' +
         'pagination, so older pings cannot be reached at all. ' +
         NEEDS_READ_WRITE_KEY,
-      inputSchema: {
+      inputSchema: z.object({
         check: uuidParam,
         type: pingTypeParam.optional().describe('Filtered client-side.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
-      },
-      annotations: { readOnlyHint: true },
+      }),
+      annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        // Left open: a ping record carries `ua`, the raw User-Agent of whoever
+        // pinged, plus whatever fields the instance's release adds.
+        pings: z.array(record).describe('Newest first.'),
+        returned_by_instance: z.number().int(),
+        note: z.string().optional(),
+      }),
     },
     async ({ check, type, limit }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const body = await needsReadWriteKey('list_pings', () =>
+        const body = await needsReadWriteKey(api, 'list_pings', () =>
           api.get(`/checks/${id}/pings/`)
         );
         const all = listOf(body, 'pings') as Record<string, unknown>[];
         const matching = type ? all.filter((ping) => ping.type === type) : all;
         const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
-        return budgetedList('pings', shown, {
+        return budgetedUntrustedList('pings', shown, {
           extra: {
             returned_by_instance: all.length,
             ...(matching.length > shown.length
@@ -206,15 +254,28 @@ export function registerReadTools(
         'the job that reported in, which is the fastest way to see why a check ' +
         'failed. Truncated at 64 KB. ' +
         NEEDS_READ_WRITE_KEY,
-      inputSchema: { check: uuidParam, n: pingNumberParam },
-      annotations: { readOnlyHint: true },
+      inputSchema: z.object({ check: uuidParam, n: pingNumberParam }),
+      annotations: READ_ONLY,
+      // The least trusted content this server returns: whoever knows a ping URL
+      // writes this, and a ping URL sits in a cron job on every monitored host.
+      outputSchema: z.object({
+        ...untrustedFields,
+        check: z.string(),
+        ping: z.number().int(),
+        body: z.string(),
+        empty: z.literal(true).optional(),
+        truncated: z
+          .string()
+          .optional()
+          .describe('Present when the body hit the byte cap. Not retrievable.'),
+      }),
     },
     async ({ check, n }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
         let raw: RawResponse;
         try {
-          raw = (await needsReadWriteKey('get_ping_body', () =>
+          raw = (await needsReadWriteKey(api, 'get_ping_body', () =>
             api.get(`/checks/${id}/pings/${n}/body`, {
               raw: true,
               maxBytes: MAX_PING_BODY_BYTES,
@@ -235,16 +296,26 @@ export function registerReadTools(
           throw error;
         }
         if (raw.body.length === 0) {
-          return textResult(`Ping ${n} of check ${id} has an empty body.`);
+          return untrustedTextResult(
+            `Ping ${n} of check ${id} has an empty body.`,
+            { check: id, ping: n, body: '', empty: true }
+          );
         }
         // Whatever pings the check writes this. It is the least trusted content
         // this server returns.
-        return untrustedResult(
-          raw.truncated
-            ? `${raw.body}\n\n[truncated at ${MAX_PING_BODY_BYTES} bytes. The rest is not "
-              + "retrievable — the API serves a ping body whole or not at all, so there is no "
-              + "follow-up call for the remainder.]`
-            : raw.body
+        const note = raw.truncated
+          ? `[truncated at ${MAX_PING_BODY_BYTES} bytes. The rest is not ` +
+            'retrievable — the API serves a ping body whole or not at all, so ' +
+            'there is no follow-up call for the remainder.]'
+          : undefined;
+        return untrustedTextResult(
+          note === undefined ? raw.body : `${raw.body}\n\n${note}`,
+          {
+            check: id,
+            ping: n,
+            body: raw.body,
+            ...(note === undefined ? {} : { truncated: note }),
+          }
         );
       })
   );
@@ -257,14 +328,21 @@ export function registerReadTools(
         'Lists the up/down transitions of a check — the history behind its ' +
         'current status. The instance keeps the current month and the two before ' +
         'it. Accepts a UUID or a unique_key.',
-      inputSchema: {
+      inputSchema: z.object({
         check: checkIdParam,
         seconds: secondsWindowParam.optional(),
         start: unixTimeParam.optional().describe('Only flips newer than this.'),
         end: unixTimeParam.optional().describe('Only flips older than this.'),
         limit: limitParam.optional().describe(`Default ${DEFAULT_LIMIT}.`),
-      },
-      annotations: { readOnlyHint: true },
+      }),
+      annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        flips: z.array(record),
+        returned_by_instance: z.number().int(),
+        note: z.string().optional(),
+      }),
     },
     async ({ check, seconds, start, end, limit }) =>
       run(async () => {
@@ -277,7 +355,7 @@ export function registerReadTools(
         );
         const all = flipsOf(body);
         const shown = all.slice(0, limit ?? DEFAULT_LIMIT);
-        return budgetedList('flips', shown, {
+        return budgetedUntrustedList('flips', shown, {
           extra: {
             returned_by_instance: all.length,
             ...(all.length > shown.length
@@ -300,16 +378,23 @@ export function registerReadTools(
         'create_check and update_check accept in their channels argument. ' +
         'Integrations themselves can only be created in the web UI. ' +
         NEEDS_READ_WRITE_KEY,
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+      annotations: READ_ONLY,
+      outputSchema: z.object({
+        ...untrustedFields,
+        truncated: truncationNote,
+        integrations: z
+          .array(record)
+          .describe('Each carries the uuid create_check accepts in channels.'),
+      }),
     },
     async () =>
       run(async () => {
-        const body = await needsReadWriteKey('list_integrations', () =>
+        const body = await needsReadWriteKey(api, 'list_integrations', () =>
           api.get('/channels/')
         );
         const channels = listOf(body, 'channels');
-        return budgetedList('integrations', channels, {
+        return budgetedUntrustedList('integrations', channels, {
           narrowWith:
             'The API offers no filter here; the project has that many integrations.',
         });
@@ -324,8 +409,16 @@ export function registerReadTools(
         'Lists the status badge URLs of the project, one entry per tag plus "*" ' +
         'for the project as a whole. The plain variants treat a check in its ' +
         'grace period as up; the ones suffixed 3 report up, late and down separately.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+      annotations: READ_ONLY,
+      // Left open: the badge document is keyed by tag, and a tag is whatever
+      // somebody typed.
+      outputSchema: z.object({
+        ...untrustedFields,
+        badges: z
+          .record(z.string(), record)
+          .describe('Keyed by tag, plus "*" for the project as a whole.'),
+      }),
     },
     async () =>
       run(async () => {
@@ -334,7 +427,7 @@ export function registerReadTools(
           body && typeof body === 'object' && 'badges' in body
             ? (body as { badges: unknown }).badges
             : body;
-        return budgetedJsonResult({ badges });
+        return budgetedUntrustedResult({ badges });
       })
   );
 
@@ -346,8 +439,23 @@ export function registerReadTools(
         'Checks that the configured Healthchecks instance is reachable and its ' +
         'database is answering. Needs no API key, so it is the tool to try first ' +
         'when something is not working.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+      annotations: READ_ONLY,
+      // The marker is *conditional* here, and that is the point. A plain "OK"
+      // is this server's own sentence about its own configuration. Anything
+      // else is up to 4 kB written by whatever answered — which, on this
+      // unauthenticated endpoint, is exactly the case where it may not be
+      // Healthchecks at all: an SSO portal, a captive proxy, a WAF block page.
+      outputSchema: z.object({
+        untrusted: z
+          .literal(true)
+          .optional()
+          .describe('Present only when the instance answered something else.'),
+        source: z.literal('healthchecks').optional(),
+        instance: z.string(),
+        ok: z.boolean().describe('True only when the answer was exactly "OK".'),
+        answer: z.string().describe('Up to 4 kB of whatever replied.'),
+      }),
     },
     async () =>
       run(async () => {
@@ -360,10 +468,33 @@ export function registerReadTools(
           maxBytes: 4096,
         })) as RawResponse;
         const text = raw.body.trim();
-        return textResult(
-          text === 'OK'
-            ? `${api.siteRoot} is reachable and its database is answering.`
-            : `${api.siteRoot} answered the status endpoint with: ${text}`
+        if (text === 'OK') {
+          // The server's own sentence about its own configuration, and
+          // deliberately *not* marked: the marker has to mean something, and
+          // putting it on this would make it noise.
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `${api.siteRoot} is reachable and its database is answering.`,
+              },
+            ],
+            structuredContent: {
+              instance: api.siteRoot,
+              ok: true,
+              answer: 'OK',
+            },
+          };
+        }
+        // Anything else is up to 4 KB written by whatever answered — which, on
+        // this unauthenticated endpoint, is exactly the case where it may not be
+        // Healthchecks at all: an SSO portal, a captive proxy, a WAF block page.
+        // Echoing that into a sentence of the server's own was the one place a
+        // stranger's text arrived unlabelled.
+        return untrustedTextResult(
+          `${api.siteRoot} answered the status endpoint with something other ` +
+            `than "OK":\n\n${text}`,
+          { instance: api.siteRoot, ok: false, answer: text }
         );
       })
   );
@@ -377,8 +508,26 @@ export function registerReadTools(
         'whether it is a read-only or a read-write key — which decides whether ' +
         'list_pings, get_ping_body and list_integrations can be used at all, and ' +
         'whether checks are identified by uuid or by unique_key.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
+      inputSchema: z.object({}),
+      annotations: READ_ONLY,
+      // No untrusted marker: every field is this server's own configuration or
+      // a verdict it reached by probing.
+      outputSchema: z.object({
+        instance: z.string(),
+        api_key: z
+          .string()
+          .optional()
+          .describe('Only when none is configured.'),
+        note: z.string().optional(),
+        key_length_ok: z.boolean().optional(),
+        prefixed_hcr: z.boolean().optional(),
+        reachable: z.boolean().optional(),
+        accepted: z.boolean().optional(),
+        kind: z.string().optional(),
+        error: z.string().optional(),
+        checks_identified_by: z.string().optional(),
+        unavailable_tools: z.array(z.string()).optional(),
+      }),
     },
     async () =>
       run(async () => {

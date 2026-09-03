@@ -7,6 +7,7 @@
 [![license](https://img.shields.io/npm/l/healthchecks-mcp)](LICENSE)
 [![container](https://img.shields.io/badge/ghcr.io-ni--c%2Fhealthchecks--mcp-blue)](https://github.com/ni-c/healthchecks-mcp/pkgs/container/healthchecks-mcp)
 [![docs](https://img.shields.io/badge/docs-healthchecks--mcp.ni--c.de-informational)](https://healthchecks-mcp.ni-c.de)
+[![HTTP • via mcp-hub](https://img.shields.io/badge/HTTP-via%20mcp--hub-6f42c1)](https://mcp-hub.ni-c.de)
 [![sponsor](https://img.shields.io/badge/sponsor-ni--c-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ni-c)
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for
@@ -72,6 +73,7 @@ check that alerts nobody.
 | `HEALTHCHECKS_ALLOW_TOOLS`  | no       | Comma-separated tool names, `list_*` prefixes, or `essential` for a curated preset                    |
 | `HEALTHCHECKS_DENY_TOOLS`   | no       | Same syntax; removed from whatever `HEALTHCHECKS_ALLOW_TOOLS` left                                    |
 | `HEALTHCHECKS_INSECURE_TLS` | no       | `true` accepts self-signed certificates (scoped to this connection)                                   |
+| `ELICITATION`               | no       | `false` replaces the approval dialog with the two-call token. **Not prefixed**                        |
 
 `HEALTHCHECKS_URL` is the site root, not the API root: `https://hc.example.net`,
 not `https://hc.example.net/api/v3`. Both are accepted — the suffix is trimmed —
@@ -162,6 +164,40 @@ docker run --rm -i \
 
 Add `-e HEALTHCHECKS_URL=https://hc.example.net` for a self-hosted instance.
 
+### Through mcp-hub
+
+A client that cannot spawn a local process — ChatGPT connectors, Claude on the web,
+Cursor, LibreChat — reaches healthchecks-mcp through [mcp-hub](https://mcp-hub.ni-c.de): one
+container serves many stdio MCP servers over Streamable HTTP, with an OAuth 2.1 login
+behind a single password and long-lived tokens for the clients that cannot do OAuth. Its
+`/hub` endpoint puts every server behind six meta-tools, so one connector reaches all of
+them without N×tool schemas in the model's context, and it speaks both protocol revisions
+— a question this server asks travels through it to the person at the far end.
+
+Its `/config/mcp.json` uses Claude Code's format, so the entry is the one you already
+have:
+
+```json
+{
+  "mcpServers": {
+    "healthchecks-mcp": {
+      "command": "npx",
+      "args": ["-y", "healthchecks-mcp"],
+      "env": {
+        "HEALTHCHECKS_URL": "https://hc.example.net",
+        "HEALTHCHECKS_API_KEY": "…",
+        "HEALTHCHECKS_ALLOW_TOOLS": "essential"
+      },
+      "denyTools": ["delete_check,pause_check"]
+    }
+  }
+}
+```
+
+`allowTools` and `denyTools` there are the hub's **own** per-server filter, which is not
+the same thing as `*_ALLOW_TOOLS` in `env` — the difference, and the mistake it invites,
+are in the [client guide](https://healthchecks-mcp.ni-c.de/guide/clients#through-mcp-hub).
+
 ## Tools
 
 Read tools are always registered. 🔑 marks the ones Healthchecks requires a
@@ -186,9 +222,35 @@ Write tools are registered unless `HEALTHCHECKS_READ_ONLY=true`.
 | ----------------- | --------------------------------------------------------------------------------------------------------- |
 | `create_check`    | Creates a check. Notifies every integration unless `channels` says otherwise                              |
 | `update_check`    | Changes the given fields. `channels` replaces the list rather than adding to it; an empty list is refused |
-| `pause_check` 👤  | Stops the check expecting pings — and alerting                                                            |
+| `pause_check`     | Stops the check expecting pings — and alerting. `resume_check` puts it back                               |
 | `resume_check`    | Puts a paused check back into the `new` state                                                             |
 | `delete_check` 👤 | Deletes a check. The UUID is not recoverable                                                              |
+
+### Structured output
+
+Every tool declares an `outputSchema` and answers with `structuredContent`
+alongside the text block, so a client can use the result without parsing prose:
+
+```jsonc
+{
+  "untrusted": true,
+  "source": "healthchecks",
+  "checks": [{ "id": "…", "name": "Nightly Backup", "status": "up" }],
+  "total_in_project": 12,
+}
+```
+
+Every tool that reports anything from the instance carries `untrusted: true`
+and `source: "healthchecks"` as fields — a check name, a description and above
+all a logged ping body are written by whoever pinged, and a ping URL sits in a
+cron job on every monitored host. `get_api_key_info` is without it, and
+`get_status` carries it **only** when the instance answered something other than
+`OK`: a plain `OK` is this server's own sentence, and a marker on everything is
+a marker that means nothing.
+
+Fields this server builds are described exactly; a check record is left open,
+because `normalizeCheck` passes through whatever a self-hosted release chose to
+add and the SDK validates every result against its schema before it goes out.
 
 ## Not exposed, on purpose
 
@@ -206,10 +268,14 @@ Write tools are registered unless `HEALTHCHECKS_READ_ONLY=true`.
 
 ## Safety
 
-- **`pause_check` and `delete_check` are two-step.** The first call returns a
-  short-lived confirmation token bound to that exact check and that exact
-  operation; only a second call carrying that token acts. A model cannot satisfy
-  this gate on its own, and a pause token is not a delete token.
+- **`delete_check` asks a person.** Where the client supports MCP elicitation it
+  raises a real dialog that the model cannot answer on its behalf; where it does
+  not, it falls back to a short-lived token bound to that exact check and that
+  exact operation, and says so rather than implying somebody approved.
+  `pause_check` is deliberately not asked about — `resume_check` puts it back and
+  nothing is lost in between, and a dialog in front of a reversible change is how
+  people learn to tick without reading. See
+  [Asking a person](https://healthchecks-mcp.ni-c.de/guide/approval).
 - **Confirmation prompts never quote content from Healthchecks** — a check's name
   and description are free text this server does not control, and that text is
   read by a model.
@@ -222,6 +288,11 @@ Write tools are registered unless `HEALTHCHECKS_READ_ONLY=true`.
   never built, not refused at call time.
 - The API key is deleted from `process.env` once it has been read, and never
   travels in a request body.
+
+## Documentation
+
+The full guide, tool reference and security notes live at
+**[healthchecks-mcp.ni-c.de](https://healthchecks-mcp.ni-c.de)** (source in [`docs/`](docs/)).
 
 ## Development
 
@@ -239,6 +310,13 @@ npm run lint && npm run build && npm run test:coverage
 The release workflow publishes to npm (Trusted Publishing, with provenance), creates
 the GitHub release from the CHANGELOG section and updates the MCP Registry entry.
 
+## Contributing
+
+Issues, discussions and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md). For vulnerabilities please use
+[private reporting](https://github.com/ni-c/healthchecks-mcp/security/advisories/new)
+rather than a public issue; the policy is in [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT © Willi Thiel
+[MIT](LICENSE) © Willi Thiel

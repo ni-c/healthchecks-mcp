@@ -41,6 +41,17 @@ than change monitoring. It also pairs naturally with a read-only API key: withou
 it, a model can see `delete_check`, try it, and get an opaque authorisation error
 instead of a clear absence.
 
+## Turning the approval dialog off
+
+`delete_check` asks a person through MCP elicitation before it acts.
+`ELICITATION=false` takes it to the two-call token instead. It does not remove the
+guard; there is no setting in which a guarded call goes unannounced.
+
+The variable deliberately carries no `HEALTHCHECKS_` prefix, which means it reaches
+every MCP server in the same environment, and — unlike the booleans above — a value
+it does not recognise **stops the server** rather than failing open. See
+[Asking a person](/guide/approval).
+
 ## TLS and self-hosted instances
 
 `HEALTHCHECKS_URL` must be `http://` or `https://`, must carry no `user:pass@`,

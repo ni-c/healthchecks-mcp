@@ -1,17 +1,26 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+/**
+ * What this repository still has to prove about its tool filter.
+ *
+ * The filter lives in `mcp-tool-allowlist` and is tested there: pattern syntax,
+ * the preset, how a rejected entry is quoted back, the shape of every message.
+ * Repeating that here would test the dependency.
+ *
+ * What only this repository can assert is the wiring — that the catalogue names
+ * exactly the tools the server registers, that the messages name *these*
+ * variables, and that a filtered tool is really gone rather than merely hidden.
+ */
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-import type { Config } from '../src/config.js';
-import { createServer } from '../src/server.js';
-import { ToolFilterError } from '../src/tool-filter.js';
 import {
   ALL_TOOLS,
   ESSENTIAL_TOOLS,
   READ_TOOLS,
   WRITE_TOOLS,
 } from '../src/tools/catalogue.js';
+
+import type { Config } from '../src/config.js';
+import { createServer } from '../src/server.js';
+import { ToolFilterError } from 'mcp-tool-allowlist';
 import { CHECK_UUID, stubFetch, testConfig } from './harness.js';
 
 /** The tools a server built with this configuration actually offers. */
@@ -130,19 +139,6 @@ describe('selecting tools', () => {
     );
   });
 
-  it('trims entries, ignores case and skips empty ones', async () => {
-    expect(
-      await toolNames({ allowTools: ' LIST_CHECKS ,, get_check, ' })
-    ).toEqual(['get_check', 'list_checks']);
-  });
-
-  it('treats an empty value as no filter at all', async () => {
-    // `HEALTHCHECKS_ALLOW_TOOLS=` in a compose file must not mean "allow nothing".
-    expect(await toolNames({ allowTools: '   ' })).toEqual(
-      [...ALL_TOOLS].sort()
-    );
-  });
-
   it('leaves an unconfigured server untouched', async () => {
     expect(await toolNames()).toEqual([...ALL_TOOLS].sort());
   });
@@ -163,15 +159,15 @@ describe('a filtered-out tool', () => {
       client.connect(clientTransport),
     ]);
 
-    const result = (await client.callTool({
-      name: 'delete_check',
-      arguments: { check: CHECK_UUID },
-    })) as CallToolResult;
-
-    expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain(
-      'Tool delete_check not found'
-    );
+    // SDK v2 reports an unknown tool as a JSON-RPC error rather than as a
+    // result carrying isError. Either way the call fails and nothing reaches
+    // the API, which is what this test is about.
+    await expect(
+      client.callTool({
+        name: 'delete_check',
+        arguments: { check: CHECK_UUID },
+      })
+    ).rejects.toThrow('Tool delete_check not found');
     expect(stub.calls).toHaveLength(0);
   });
 });
@@ -186,21 +182,6 @@ describe('refusing an unusable list', () => {
     expect(() =>
       createServer(testConfig({ allowTools: 'list_checkz' }))
     ).toThrow(/no tool matches "list_checkz".*list_checks/s);
-  });
-
-  it('rejects a pattern that matches nothing', () => {
-    expect(() => createServer(testConfig({ allowTools: 'lst_*' }))).toThrow(
-      /no tool matches "lst_\*"/
-    );
-  });
-
-  it('rejects a pattern with the star anywhere but last', () => {
-    expect(() => createServer(testConfig({ allowTools: '*_check' }))).toThrow(
-      /single trailing "\*"/
-    );
-    expect(() => createServer(testConfig({ allowTools: 'list_*_x' }))).toThrow(
-      /single trailing "\*"/
-    );
   });
 
   it('applies the same rule to the deny list', () => {
@@ -259,7 +240,7 @@ describe('together with read-only mode', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     expect(() =>
       createServer(testConfig({ ...readOnly, allowTools: 'create_*' }))
-    ).toThrow(/only write tools, but .*_READ_ONLY is set/);
+    ).toThrow(/read-only mode suppresses.*HEALTHCHECKS_READ_ONLY is set/s);
   });
 
   it('does not apply the write-tool rule to the deny list', async () => {
