@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ALL_TOOLS, READ_TOOLS } from '../src/tools/catalogue.js';
 import { CHECK_UUID, call, connect, stubFetch, textOf } from './harness.js';
+import { expectPortableToolSchemas } from 'mcp-integration-harness';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -77,6 +78,16 @@ describe('server', () => {
       // depending on who asked.
       expect(tool.outputSchema?.type, tool.name).toBe('object');
     }
+  });
+
+  it('advertises schemas every client can read', async () => {
+    // Legal JSON Schema is not enough. `{}` in a schema position — what zod
+    // writes for `looseObject`, `catchall` and `z.unknown()` — and `type` as an
+    // array are both refused, or silently dropped, by some clients. Neither is
+    // a contract: each has an equivalent spelling that says the same thing, so
+    // there is nothing here to excuse.
+    const { tools } = await (await connect()).listTools();
+    expectPortableToolSchemas(tools);
   });
 
   it('declares all four annotation hints on every tool', async () => {
