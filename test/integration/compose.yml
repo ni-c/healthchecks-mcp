@@ -9,7 +9,7 @@ services:
   healthchecks:
     # Overridable so the weekly CI run can point at :latest and report drift
     # without changing what the PR gate tests.
-    image: ${HEALTHCHECKS_IMAGE:-healthchecks/healthchecks:v3.10}
+    image: ${HEALTHCHECKS_IMAGE:-healthchecks/healthchecks:v4.4}
     # The image **ignores** `SUPERUSER_EMAIL` and `SUPERUSER_PASSWORD` — they
     # are in plenty of examples on the internet and they create nothing, so
     # the login form then answers "Incorrect" for an account that was never
