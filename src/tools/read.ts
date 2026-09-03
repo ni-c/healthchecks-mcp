@@ -27,6 +27,7 @@ import {
 import {
   checkRecord,
   checkSummary,
+  record,
   truncationNote,
   untrustedFields,
 } from '../output-schema.js';
@@ -179,7 +180,12 @@ export function registerReadTools(
         'read-only API key returns in place of one.',
       inputSchema: z.object({ check: checkIdParam }),
       annotations: READ_ONLY,
-      outputSchema: checkRecord.extend(untrustedFields),
+      // The `meta` again: `extend` builds a new schema and does not carry the
+      // parent's metadata over, so without it this one goes back to spelling
+      // `additionalProperties` as `{}`.
+      outputSchema: checkRecord
+        .extend(untrustedFields)
+        .meta({ additionalProperties: true }),
     },
     async ({ check }) =>
       run(async () => {
@@ -211,7 +217,7 @@ export function registerReadTools(
         truncated: truncationNote,
         // Left open: a ping record carries `ua`, the raw User-Agent of whoever
         // pinged, plus whatever fields the instance's release adds.
-        pings: z.array(z.looseObject({})).describe('Newest first.'),
+        pings: z.array(record).describe('Newest first.'),
         returned_by_instance: z.number().int(),
         note: z.string().optional(),
       }),
@@ -333,7 +339,7 @@ export function registerReadTools(
       outputSchema: z.object({
         ...untrustedFields,
         truncated: truncationNote,
-        flips: z.array(z.looseObject({})),
+        flips: z.array(record),
         returned_by_instance: z.number().int(),
         note: z.string().optional(),
       }),
@@ -378,7 +384,7 @@ export function registerReadTools(
         ...untrustedFields,
         truncated: truncationNote,
         integrations: z
-          .array(z.looseObject({}))
+          .array(record)
           .describe('Each carries the uuid create_check accepts in channels.'),
       }),
     },
@@ -407,7 +413,12 @@ export function registerReadTools(
       annotations: READ_ONLY,
       // Left open: the badge document is keyed by tag, and a tag is whatever
       // somebody typed.
-      outputSchema: z.object({ ...untrustedFields, badges: z.unknown() }),
+      outputSchema: z.object({
+        ...untrustedFields,
+        badges: z
+          .record(z.string(), record)
+          .describe('Keyed by tag, plus "*" for the project as a whole.'),
+      }),
     },
     async () =>
       run(async () => {
