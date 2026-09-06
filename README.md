@@ -1,16 +1,19 @@
 # healthchecks-mcp
 
+<!-- badges: start -->
+
 [![CI](https://img.shields.io/github/actions/workflow/status/ni-c/healthchecks-mcp/ci.yml?branch=main&label=CI)](https://github.com/ni-c/healthchecks-mcp/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ni-c/healthchecks-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/ni-c/healthchecks-mcp)
+<a href="https://socket.dev/npm/package/healthchecks-mcp"><img src="https://socket.dev/api/badge/npm/package/healthchecks-mcp" alt="Socket supply-chain report" height="20"></a>
+[![Glama score](https://glama.ai/mcp/servers/ni-c/healthchecks-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ni-c/healthchecks-mcp)
+<br>
 [![npm version](https://img.shields.io/npm/v/healthchecks-mcp)](https://www.npmjs.com/package/healthchecks-mcp)
-[![npm downloads](https://img.shields.io/npm/dm/healthchecks-mcp)](https://www.npmjs.com/package/healthchecks-mcp)
-[![node](https://img.shields.io/node/v/healthchecks-mcp)](https://nodejs.org)
-[![license](https://img.shields.io/npm/l/healthchecks-mcp)](LICENSE)
-[![container](https://img.shields.io/badge/ghcr.io-ni--c%2Fhealthchecks--mcp-blue)](https://github.com/ni-c/healthchecks-mcp/pkgs/container/healthchecks-mcp)
-[![docs](https://img.shields.io/badge/docs-healthchecks--mcp.ni--c.de-informational)](https://healthchecks-mcp.ni-c.de)
-[![HTTP • via mcp-hub](https://img.shields.io/badge/HTTP-via%20mcp--hub-6f42c1)](https://mcp-hub.ni-c.de)
-[![Glama](https://glama.ai/mcp/servers/ni-c/healthchecks-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ni-c/healthchecks-mcp)
+[![container image](https://img.shields.io/badge/ghcr.io-ni--c%2Fhealthchecks--mcp-4f46e5?logo=docker&logoColor=white)](https://github.com/ni-c/healthchecks-mcp/pkgs/container/healthchecks-mcp)
+[![HTTP via mcp-hub](https://img.shields.io/badge/HTTP-via%20mcp--hub-4f46e5?logo=modelcontextprotocol&logoColor=white)](https://mcp-hub.ni-c.de)
+<br>
+[![docs](https://img.shields.io/badge/docs-healthchecks--mcp.ni--c.de-4f46e5?logo=readthedocs&logoColor=white)](https://healthchecks-mcp.ni-c.de)
 [![sponsor](https://img.shields.io/badge/sponsor-ni--c-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ni-c)
+<!-- badges: end -->
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for
 [Healthchecks](https://healthchecks.io), the dead man's switch for cron jobs and
