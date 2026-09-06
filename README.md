@@ -1,6 +1,7 @@
 # healthchecks-mcp
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ni-c/healthchecks-mcp/ci.yml?branch=main&label=CI)](https://github.com/ni-c/healthchecks-mcp/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ni-c/healthchecks-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/ni-c/healthchecks-mcp)
 [![npm version](https://img.shields.io/npm/v/healthchecks-mcp)](https://www.npmjs.com/package/healthchecks-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/healthchecks-mcp)](https://www.npmjs.com/package/healthchecks-mcp)
 [![node](https://img.shields.io/node/v/healthchecks-mcp)](https://nodejs.org)

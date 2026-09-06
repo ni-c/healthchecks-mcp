@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The server introduces itself in full. `title`, `description`, `websiteUrl` and
+  `icons` now travel with `name` and `version`, so a client that shows a server
+  to a person has something to show: the human name, the one-line description,
+  the documentation site and the project's own icon. All four were already in
+  `server.json` for the registry and reached no client at all; a test compares
+  the two so they cannot drift.
+- Server `instructions`. The results of this server carry an `untrusted` marker,
+  but that is read after the fact — this is the channel a model sees before it
+  calls anything, and it says where the content comes from and what the two
+  properties of Healthchecks are that surprise people.
+- An OpenSSF Scorecard run, weekly and on every push to `main`, reporting into
+  the Security tab next to CodeQL and Trivy. The badge is the second in the row.
+
 ### Changed
 
 - The loopback check behind the plain-HTTP warning comes from
