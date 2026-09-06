@@ -1,22 +1,27 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  ALL_TOOLS,
-  ESSENTIAL_TOOLS,
-  READ_TOOLS,
-} from '../src/tools/catalogue.js';
+import { ALL_TOOLS, ESSENTIAL_TOOLS } from '../src/tools/catalogue.js';
+import { connect } from './harness.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 /**
  * The tool reference is written by hand, so this is what stops it drifting from
  * the catalogue.
  *
- * The alternative — generating the page — buys the same guarantee for fourteen
- * tools at the cost of a generator nobody reads and prose nobody can edit. A test
- * that fails by name when a tool is added, renamed or moved into the preset is
- * the cheaper half of it, and it fails in the same run as everything else.
+ * The alternative — generating the page — buys the same guarantee at the cost of
+ * a generator nobody reads and prose nobody can edit, and the prose is most of
+ * the value: what the endpoint behind a tool does that its name does not
+ * promise, which parameter combination it silently resolves its own way, which
+ * default would be dangerous. A test that fails by name when a tool is added,
+ * renamed, moved into the preset or loses its confirmation guard is the cheaper
+ * half of it, and it fails in the same run as everything else.
  */
 function read(relative: string): string {
   return readFileSync(
@@ -27,20 +32,126 @@ function read(relative: string): string {
 
 const reference = read('docs/reference/tools.md');
 
-/** Every `### \`tool_name\`` heading, in the order the page lists them. */
-function documentedTools(markdown: string): string[] {
-  return [...markdown.matchAll(/^### `([a-z0-9_]+)`/gm)].map(
+/**
+ * Markers and the kind word some servers put after the name. Both decorate the
+ * heading; neither is part of it.
+ */
+const MARKERS =
+  /[\u{1F464}\u{1F511}\u{1F194}\u2605]|<Badge[^>]*\/?>|<\/Badge>|\b(?:read-only|read|write|destructive)\b/gu;
+
+/**
+ * The tools a heading names — none, if the heading is prose.
+ *
+ * The family writes this page in more than one shape: `### \`tool\``, plain
+ * `## tool`, and one heading for a pair (`### \`enable_x\` / \`disable_x\``).
+ * What they have in common is that a tool heading carries *nothing but* the
+ * names, so `## The \`essential\` preset` drops out on its own rather than
+ * being read as a tool called `essential`.
+ */
+function headingTools(heading: string): string[] {
+  const clean = heading.replace(MARKERS, '').trim();
+  const spans = [...clean.matchAll(/`([a-z][a-z0-9_]*)`/g)].map(
     (match) => match[1] as string
   );
+  if (spans.length > 0) {
+    const rest = clean.replace(/`[a-z][a-z0-9_]*`/g, '').replace(/[\s/,]/g, '');
+    return rest === '' ? spans : [];
+  }
+  const bare = clean.split('/').map((part) => part.trim());
+  return bare.every((part) => /^[a-z][a-z0-9_]*$/.test(part)) ? bare : [];
 }
 
-/** The tools whose section carries the **essential** marker. */
-function markedEssential(markdown: string): string[] {
-  const sections = markdown.split(/^### /m).slice(1);
-  return sections
-    .filter((section) => /\*\*essential\*\*/.test(section))
-    .map((section) => /^`([a-z0-9_]+)`/.exec(section)?.[1])
-    .filter((name): name is string => name !== undefined);
+/**
+ * Tools listed in a table rather than in sections.
+ *
+ * Keyed on a first column headed `Tool`, which is what separates the tool table
+ * from the parameter tables further down — those are headed `Parameter`.
+ */
+function tableTools(markdown: string): string[] {
+  const names: string[] = [];
+  let inToolTable = false;
+  for (const line of markdown.split('\n')) {
+    if (/^\|\s*Tool\s*\|/.test(line)) {
+      inToolTable = true;
+      continue;
+    }
+    if (!line.startsWith('|')) {
+      inToolTable = false;
+      continue;
+    }
+    if (!inToolTable || /^\|[\s|:-]+\|$/.test(line)) continue;
+    const match = /`([a-z][a-z0-9_]*)`/.exec(line.split('|')[1] ?? '');
+    if (match) names.push(match[1] as string);
+  }
+  return names;
+}
+
+/**
+ * Every tool the page documents, in the order it lists them.
+ *
+ * De-duplicated: several servers list their tools in an overview table *and*
+ * give each one a section, and a tool named twice is documented once.
+ */
+function documentedTools(markdown: string): string[] {
+  const headings = [...markdown.matchAll(/^#{2,4} +(.+)$/gm)].flatMap(
+    ([, heading]) => headingTools(heading as string)
+  );
+  return [...new Set([...headings, ...tableTools(markdown)])];
+}
+
+/** What the page says about each tool: its section, or its row in the table. */
+function bodyByTool(markdown: string): Map<string, string> {
+  const bodies = new Map<string, string>();
+  const headings = [...markdown.matchAll(/^#{2,4} +(.+)$/gm)];
+  for (const [index, match] of headings.entries()) {
+    // From the heading itself, not after it: several servers put the markers on
+    // the heading line (`### \`delete_link\` 👤`) rather than in the body.
+    const start = match.index as number;
+    const end =
+      (headings[index + 1]?.index as number | undefined) ?? markdown.length;
+    const body = markdown.slice(start, end);
+    for (const name of headingTools(match[1] as string)) {
+      bodies.set(name, (bodies.get(name) ?? '') + body);
+    }
+  }
+  // A marker may sit in the overview row rather than in the section, so the row
+  // counts as part of what the page says about that tool.
+  const fromTable = new Set(tableTools(markdown));
+  for (const line of markdown.split('\n')) {
+    if (!line.startsWith('|')) continue;
+    const match = /`([a-z][a-z0-9_]*)`/.exec(line.split('|')[1] ?? '');
+    if (match && fromTable.has(match[1] as string)) {
+      const name = match[1] as string;
+      bodies.set(name, (bodies.get(name) ?? '') + line);
+    }
+  }
+  return bodies;
+}
+
+function marked(markdown: string, marker: RegExp): string[] {
+  return [...bodyByTool(markdown)]
+    .filter(([, body]) => marker.test(body))
+    .map(([name]) => name);
+}
+
+/**
+ * The tools that really take a `confirm_token`, asked of the built server.
+ *
+ * Read from the registered input schemas rather than from a list here, so the
+ * page cannot claim a guard the code does not have — or, worse, stay quiet
+ * about one it lost.
+ */
+async function guardedTools(): Promise<string[]> {
+  const client = await connect();
+  const { tools } = await client.listTools();
+  return tools
+    .filter((tool) =>
+      Object.hasOwn(
+        (tool.inputSchema.properties ?? {}) as Record<string, unknown>,
+        'confirm_token'
+      )
+    )
+    .map((tool) => tool.name);
 }
 
 describe('the tool reference', () => {
@@ -49,24 +160,15 @@ describe('the tool reference', () => {
   });
 
   it('marks exactly the essential preset', () => {
-    expect(markedEssential(reference).sort()).toEqual(
+    expect(marked(reference, /\*\*essential\*\*/).sort()).toEqual(
       [...ESSENTIAL_TOOLS].sort()
     );
   });
 
-  it('keeps the read tools ahead of the write tools', () => {
-    const documented = documentedTools(reference);
-    const lastRead = Math.max(
-      ...(READ_TOOLS as readonly string[]).map((tool) =>
-        documented.indexOf(tool)
-      )
+  it('marks exactly the tools that require a confirmation token', async () => {
+    expect(marked(reference, /👤/).sort()).toEqual(
+      (await guardedTools()).sort()
     );
-    const firstWrite = Math.min(
-      ...documented
-        .filter((tool) => !(READ_TOOLS as readonly string[]).includes(tool))
-        .map((tool) => documented.indexOf(tool))
-    );
-    expect(lastRead).toBeLessThan(firstWrite);
   });
 });
 
@@ -82,9 +184,12 @@ describe('the fixed cross-document anchors', () => {
     expect(read('docs/guide/configuration.md')).toContain(
       '## Choosing the tools that load'
     );
-    for (const page of ['docs/reference/environment.md', 'docs/guide/faq.md']) {
-      expect(read(page)).toContain('#choosing-the-tools-that-load');
-    }
+    // faq.md links it in all nineteen servers. environment.md does so in three,
+    // which makes it a good idea rather than the convention — asserting it here
+    // would fail sixteen repositories over a link nobody agreed on.
+    expect(read('docs/guide/faq.md')).toContain(
+      '#choosing-the-tools-that-load'
+    );
   });
 
   it('keeps the changelog include by region, never by line range', () => {
