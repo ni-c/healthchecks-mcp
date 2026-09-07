@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      last in the file so the link definitions come along. -->
 <!-- #region changelog -->
 
-## [Unreleased]
+## [0.3.0] - 2026-09-07
 
 ### Added
 
@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mcp-internal-hosts` instead of a copy in `config.ts`. Same classifier the
   rest of the family uses, same behaviour — one fewer place to keep 25 lines of
   hand-written IPv6 normalisation correct.
+
+### Security
+
+- **mcp-approval 0.8.2.** A sealed dialog answer is single-use since 0.8.1: the same `requestState` presented again within its lifetime used to be accepted again, and with a resource key that is the same every time — a whole stream, a fixed set of targets — every replay landed. npm users on `^0.8.0` already had the fix; the Docker image is built from the lockfile and carried 0.8.0 until this release.
 
 ## [0.2.0] - 2026-09-03
 
