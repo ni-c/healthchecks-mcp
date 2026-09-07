@@ -147,7 +147,11 @@ export const channelsParam = z
     // this is not.
     // Clearing every integration is deliberately not offered here; the web UI
     // does it, in front of someone who can see what it means.
-    z.array(z.string().trim().min(1).max(100)).min(1),
+    // `.max(100)`, because the list is joined into one comma-separated string
+    // and sent: without a ceiling a caller can build a request body out of an
+    // unbounded number of names. A project with more than a hundred
+    // integrations on one check does not exist.
+    z.array(z.string().trim().min(1).max(100)).min(1).max(100),
   ])
   .describe(
     'Integrations to notify: "*" for all of them, or a list of integration UUIDs ' +
@@ -192,6 +196,10 @@ export const pingNumberParam = z
   .number()
   .int()
   .min(1)
+  // Bounded, like every other number here. The instance keeps 100 pings on a
+  // free plan and 1000 on a paid one, and this value is spliced into a request
+  // path — an unbounded integer is a URL of unbounded length.
+  .max(100_000_000)
   .describe('Ping number `n`, as reported by list_pings.');
 
 export const confirmTokenParam = z

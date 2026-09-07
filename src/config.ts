@@ -1,5 +1,7 @@
 import { internalHostKind } from 'mcp-internal-hosts';
 
+import { describeValue } from './clean.js';
+
 /** Where the SaaS lives. Self-hosted instances set `HEALTHCHECKS_URL` instead. */
 export const DEFAULT_URL = 'https://healthchecks.io';
 
@@ -75,6 +77,22 @@ export function missingConfigKeys(config: Config): string[] {
  */
 export function malformedApiKeyMessage(config: Config): string | undefined {
   if (config.apiKey === undefined) return undefined;
+  // The shape comes first. A key with a line break inside it — a wrapped paste,
+  // or a `$(cat key)` of a hard-wrapped file — has an ordinary length as far as
+  // the count below is concerned, and reaches undici, whose refusal quotes the
+  // whole value: `Headers.append: "<the key>" is an invalid header value.` That
+  // message travels out through the generic error path into the model's
+  // context. Position and length, never the value.
+  const offending = firstNonPrintable(config.apiKey);
+  if (offending !== undefined) {
+    return (
+      `HEALTHCHECKS_API_KEY contains a character outside printable ASCII at ` +
+      `position ${offending + 1} of ${config.apiKey.length}. A key is 32 ` +
+      'visible characters; a line break inside the value is what a wrapped ' +
+      'paste leaves behind. Copy the key again from Project Settings → API ' +
+      'Access. The value is not shown here.'
+    );
+  }
   if (config.apiKey.length === API_KEY_LENGTH) return undefined;
   return (
     `HEALTHCHECKS_API_KEY is ${config.apiKey.length} characters long, but ` +
@@ -83,6 +101,15 @@ export function malformedApiKeyMessage(config: Config): string | undefined {
     'from Project Settings → API Access — note that keys are per project, not ' +
     'per account, and that a ping key is not an API key.'
   );
+}
+
+/** Index of the first character the HTTP layer would refuse, if any. */
+function firstNonPrintable(value: string): number | undefined {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x21 || code > 0x7e) return i;
+  }
+  return undefined;
 }
 
 /**
@@ -114,9 +141,17 @@ export function parseElicitation(raw: string | undefined): boolean {
   const value = raw?.trim().toLowerCase();
   if (value === undefined || value === '' || value === 'true') return true;
   if (value === 'false') return false;
+  // Quoted only when it has the shape of a word somebody typed instead of
+  // "true" — the point is to show the operator their typo. Anything else is
+  // described by length: ELICITATION is unprefixed and sits in the same block
+  // as HEALTHCHECKS_API_KEY in every compose file, so it is one shifted line
+  // away from holding the key.
+  const shown = /^[A-Za-z0-9_-]{1,12}$/.test(raw ?? '')
+    ? `"${raw ?? ''}"`
+    : describeValue(raw ?? '', 0);
   console.error(
-    `healthchecks-mcp: ELICITATION must be "true" or "false" — got "${raw}". ` +
-      'Refusing to start rather than guess.'
+    'healthchecks-mcp: ELICITATION must be "true" or "false" — got ' +
+      `${shown}. Refusing to start rather than guess.`
   );
   process.exit(1);
 }
@@ -131,7 +166,16 @@ export function parseElicitation(raw: string | undefined): boolean {
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const rawUrl = env.HEALTHCHECKS_URL;
-  const apiKey = env.HEALTHCHECKS_API_KEY;
+  // Trimmed: `HEALTHCHECKS_API_KEY=$(cat key)` leaves the file's trailing
+  // newline on the value, which makes a correct key 33 characters long and
+  // produces "missing api key" from the instance — the length rule is checked
+  // upstream before the key is ever looked up.
+  const rawApiKey = env.HEALTHCHECKS_API_KEY;
+  const trimmedApiKey = rawApiKey?.trim();
+  const apiKey =
+    trimmedApiKey === undefined || trimmedApiKey.length === 0
+      ? undefined
+      : trimmedApiKey;
   // `HEALTHCHECKS_INSECURE_TLS` stays exact on purpose: it *weakens* the
   // server, so only the one spelling that unambiguously asks for it should do
   // it.
@@ -181,12 +225,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   try {
     parsed = new URL(rawUrl);
   } catch {
-    console.error(`healthchecks-mcp: HEALTHCHECKS_URL is not a valid URL`);
+    // Described, never quoted — not even the part that looks like a scheme.
+    // The value that fails to parse is the one most likely to be a secret
+    // pasted into the wrong line, and this message goes to stderr, which is the
+    // MCP client's log. The sibling servers of this family quote a value
+    // containing "://" on the grounds that a URL is not a password; that is a
+    // weaker rule than the one this file already had, and a query string
+    // carries tokens too.
+    console.error(
+      'healthchecks-mcp: HEALTHCHECKS_URL is not a valid URL ' +
+        `(a ${rawUrl.length}-character value). The value is not shown here — ` +
+        'if a key was pasted into this variable by mistake, it belongs in ' +
+        'HEALTHCHECKS_API_KEY.'
+    );
     process.exit(1);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    // The scheme is deliberately not printed. A 56-character hexadecimal key
+    // with a colon after it is a valid URL whose *scheme* is the key, so `got
+    // ${parsed.protocol}` is one paste away from printing the credential — and
+    // the branch above, which refuses a value `new URL()` cannot parse, was
+    // already written not to echo for exactly that reason.
     console.error(
-      `healthchecks-mcp: HEALTHCHECKS_URL must use http:// or https:// (got ${parsed.protocol})`
+      'healthchecks-mcp: HEALTHCHECKS_URL must use http:// or https:// — the ' +
+        `configured value uses neither (${parsed.protocol.length - 1} ` +
+        'characters before the colon). If a key was pasted into this variable ' +
+        'by mistake, it belongs in HEALTHCHECKS_API_KEY.'
     );
     process.exit(1);
   }
@@ -222,7 +286,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
  * of one of them producing `/api/v3/api/v3/checks/` and a bare 404.
  */
 export function normalizeSiteRoot(url: string): string {
-  return url.replace(/\/+$/, '').replace(/\/api\/v[123]$/, '');
+  // An index walk rather than `/\/+$/`. That pattern is tried from every
+  // position of a run of slashes and consumes the run each time, which is
+  // quadratic: 80 000 slashes followed by anything the pattern rejects cost 1.8
+  // seconds here, on the operator's own configuration value.
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 0x2f) end--;
+  return url.slice(0, end).replace(/\/api\/v[123]$/, '');
 }
 
 function isLoopbackHost(hostname: string): boolean {

@@ -304,3 +304,103 @@ describe('a URL carrying more than a site root', () => {
     }
   });
 });
+
+describe('the API key, before it ever reaches a header', () => {
+  it('trims the newline that $(cat key) leaves behind', () => {
+    // A correct key read out of a file is 33 characters long, and Healthchecks
+    // checks the length *before* it looks the key up — so the instance answers
+    // "missing api key", which reads as if the header had never been sent.
+    const spy = quiet();
+    const config = loadConfig(env({ HEALTHCHECKS_API_KEY: `${RW_KEY}\n` }));
+    expect(config.apiKey).toBe(RW_KEY);
+    expect(malformedApiKeyMessage(config)).toBeUndefined();
+    spy.mockRestore();
+  });
+
+  it('treats a key of only whitespace as no key at all', () => {
+    const spy = quiet();
+    expect(
+      loadConfig(env({ HEALTHCHECKS_API_KEY: '   ' })).apiKey
+    ).toBeUndefined();
+    spy.mockRestore();
+  });
+
+  it('names the position of a character the HTTP layer would refuse', () => {
+    // A line break in the middle survives `trim()`, has an ordinary length, and
+    // reaches undici — whose refusal quotes the whole value back at the caller.
+    const head = 'a'.repeat(15);
+    const tail = 'b'.repeat(16);
+    const config = loadConfig(
+      env({ HEALTHCHECKS_API_KEY: `${head}\n${tail}` })
+    );
+    const message = malformedApiKeyMessage(config);
+    expect(message).toContain('position 16 of 32');
+    expect(message).not.toContain(head);
+    expect(message).not.toContain(tail);
+  });
+
+  it('warns about the shape before it warns about the length', () => {
+    const config = loadConfig(
+      env({ HEALTHCHECKS_API_KEY: `short${String.fromCharCode(0)}` })
+    );
+    const message = malformedApiKeyMessage(config);
+    // Both are true of this value; the shape is the one that would otherwise
+    // reach the runtime and be quoted.
+    expect(message).toContain('outside printable ASCII');
+  });
+
+  it('still complains about a plain key of the wrong length', () => {
+    const config = loadConfig(env({ HEALTHCHECKS_API_KEY: 'k'.repeat(31) }));
+    expect(malformedApiKeyMessage(config)).toContain('31 characters long');
+  });
+});
+
+describe('startup diagnostics never carry the value', () => {
+  it('does not print the scheme of a URL that is not http', () => {
+    // A 56-character hexadecimal key with a colon after it is a valid URL whose
+    // scheme is the key.
+    const key = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8';
+    const spy = quiet();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as never);
+    expect(() =>
+      loadConfig(env({ ...complete, HEALTHCHECKS_URL: `${key}://x` }))
+    ).toThrow('exit');
+    const printed = spy.mock.calls.flat().join(' ');
+    expect(printed).not.toContain(key);
+    expect(printed).toContain('must use http:// or https://');
+    exit.mockRestore();
+    spy.mockRestore();
+  });
+
+  it('describes an unusable ELICITATION value instead of echoing it', () => {
+    // Unprefixed, and in the same block of every compose file as the key.
+    const secret = 'hcr_0123456789abcdef0123456789abcdef';
+    const spy = quiet();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as never);
+    expect(() => loadConfig(env({ ...complete, ELICITATION: secret }))).toThrow(
+      'exit'
+    );
+    const printed = spy.mock.calls.flat().join(' ');
+    expect(printed).not.toContain(secret);
+    expect(printed).toContain('36-character value');
+    exit.mockRestore();
+    spy.mockRestore();
+  });
+
+  it('still shows a short typo, which is the whole point of the message', () => {
+    const spy = quiet();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as never);
+    expect(() => loadConfig(env({ ...complete, ELICITATION: 'ture' }))).toThrow(
+      'exit'
+    );
+    expect(spy.mock.calls.flat().join(' ')).toContain('"ture"');
+    exit.mockRestore();
+    spy.mockRestore();
+  });
+});

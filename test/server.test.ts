@@ -49,7 +49,7 @@ describe('server', () => {
     const names = (await (await connect()).listTools()).tools.map(
       (t) => t.name
     );
-    expect(names.sort()).toEqual([...ALL_TOOLS].sort());
+    expect(names.toSorted()).toEqual(ALL_TOOLS.toSorted());
   });
 
   it('does not register write tools in read-only mode', async () => {
@@ -57,7 +57,7 @@ describe('server', () => {
     const names = (
       await (await connect({ readOnly: true })).listTools()
     ).tools.map((t) => t.name);
-    expect(names.sort()).toEqual([...READ_TOOLS].sort());
+    expect(names.toSorted()).toEqual(READ_TOOLS.toSorted());
   });
 
   it('lists its tools without an API key, so a sandbox can introspect it', async () => {

@@ -41,7 +41,7 @@ afterEach(() => {
 
 describe('the untrusted-content marker', () => {
   it('covers every tool in the catalogue with a call in this file', () => {
-    expect(Object.keys(CALLS).sort()).toEqual([...ALL_TOOLS].sort());
+    expect(Object.keys(CALLS).toSorted()).toEqual(ALL_TOOLS.toSorted());
   });
 
   it('marks everything that reports what the instance said', async () => {

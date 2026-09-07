@@ -43,7 +43,12 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
             exit 1
           fi
-      - run: npm ci
+      # --ignore-scripts: this job holds `id-token: write` for npm Trusted
+      # Publishing, so every dependency's install hook would run with an OIDC
+      # token available to it. Nothing in this tree needs one — `npm query
+      # ':attr(scripts,[postinstall])'` and its install/preinstall siblings are
+      # empty — and the audit job and the Dockerfile already install this way.
+      - run: npm ci --ignore-scripts
       # --provenance requires a PUBLIC repository.
       - run: npm publish --provenance
 
@@ -125,6 +130,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # --verify-tag: refuse to publish a release for a tag that is not in
+          # the repository, rather than creating one from whatever ref is here.
           gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md

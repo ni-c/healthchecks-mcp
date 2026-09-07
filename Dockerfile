@@ -5,7 +5,7 @@
 # What keeps this honest is a comparison, not a version number written down here:
 # `node:lts-alpine` and `node:24-alpine` MUST resolve to the same digest. The day
 # 24 leaves LTS they diverge, and that is visible; a hardcoded version in a comment
-# is not. Verified 2026-09-01: both resolve to the digest below, Node 24.20.0.
+# is not. Verified 2026-09-07: both resolve to the digest below, Node 24.20.0.
 # Refresh the digest and re-run that comparison together — a stale tag is
 # invisible if only the digest is re-resolved.
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
@@ -21,8 +21,9 @@ FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a
 WORKDIR /app
 ENV NODE_ENV=production
 
-# The pinned digest is the newest node:24-alpine, and it still ships OpenSSL
-# 3.5.7-r0 — CVE-2026-14456, unbounded memory growth, fixed in 3.5.8-r0. Named
+# The pinned digest is the newest node:24-alpine, and as of 2026-09-07 it still
+# ships OpenSSL 3.5.7-r0 (`apk list -I | grep libssl3` in the base image) —
+# CVE-2026-14456, unbounded memory growth, fixed in 3.5.8-r0. Named
 # packages only: a blanket `apk upgrade` would move every package in the image
 # and throw away the reproducibility the digest is pinned for. Drop this line
 # once the base image carries 3.5.8-r0 or later.
@@ -30,12 +31,20 @@ RUN apk add --no-cache --upgrade libcrypto3 libssl3
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
-# The server reports its version from package.json at runtime.
-COPY package.json package-lock.json ./
+# The server reports its version from package.json at runtime. The lockfile is
+# deliberately NOT copied: nothing reads it here, and a dependency manifest in a
+# runtime image is one more thing to keep accurate for no benefit.
+COPY package.json ./
 
-# The base image's bundled npm is a frequent source of HIGH findings and this
-# image never installs anything — remove it rather than carrying its CVEs.
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+# What the base image ships that this one has no use for. npm is a frequent
+# source of HIGH findings and this image never installs anything; yarn and
+# corepack are two more package managers with the same argument against them,
+# and they were left behind when npm was removed. `docker run --entrypoint sh
+# <image> -c 'ls /opt /usr/local/lib/node_modules; which yarn npm npx corepack'`
+# is how to check that they are gone.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+    /usr/local/lib/node_modules/corepack /usr/local/bin/corepack \
+    /opt/yarn-v* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 # Ownership proof for the MCP Registry: must match server.json's name exactly.
 LABEL io.modelcontextprotocol.server.name="io.github.ni-c/healthchecks-mcp"

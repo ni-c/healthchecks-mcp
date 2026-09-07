@@ -9,13 +9,9 @@ import {
   type HealthchecksApi,
   type RawResponse,
 } from '../api.js';
-import {
-  listOf,
-  flipsOf,
-  normalizeCheck,
-  summarizeCheck,
-  type Check,
-} from '../check.js';
+import { listOf, flipsOf, normalizeCheck, summarizeCheck } from '../check.js';
+import { objectOf, recordsOf, skippedNote } from '../boundary.js';
+import { cleanText, countControl, upstreamText } from '../clean.js';
 import {
   budgetedUntrustedList,
   budgetedUntrustedResult,
@@ -57,6 +53,17 @@ const DEFAULT_LIMIT = 50;
  * by whatever pings the check.
  */
 const MAX_PING_BODY_BYTES = 64 * 1024;
+
+/**
+ * Ceiling on how many tags the badge document may carry into a result.
+ *
+ * The document is keyed by tag and holds six URLs per tag, and the result
+ * budget cannot shorten it: every one of those URLs is under the length that
+ * makes a string worth cutting, and there is no array to halve. Three thousand
+ * tags is 293 kB that shortens to 293 kB, so the tool answered an error instead
+ * of a badge — for a project whose only fault was having a lot of tags.
+ */
+const MAX_BADGE_TAGS = 500;
 
 /** Endpoints the API gates behind a read-write key even though they only read. */
 const NEEDS_READ_WRITE_KEY =
@@ -149,21 +156,25 @@ export function registerReadTools(
     async ({ tag, slug, status, limit }) =>
       run(async () => {
         const body = await api.get(`/checks/${query({ tag, slug })}`);
-        const all = listOf(body, 'checks') as Check[];
+        // Whatever is not a record is counted, never silently dropped: a null
+        // in a list of checks says something is wrong with the instance, and a
+        // listing that is quietly one row short is the worst way to say it.
+        const { records, skipped } = recordsOf(listOf(body, 'checks'));
         const matching = status
-          ? all.filter((check) => check.status === status)
-          : all;
+          ? records.filter((check) => check.status === status)
+          : records;
         const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
+        const notes = [
+          matching.length > shown.length
+            ? `${matching.length} checks match; showing ${shown.length}. ` +
+              'Raise limit, or narrow with tag, slug or status.'
+            : undefined,
+          skipped > 0 ? skippedNote(skipped, 'checks') : undefined,
+        ].filter((note): note is string => note !== undefined);
         return budgetedUntrustedList('checks', shown.map(summarizeCheck), {
           extra: {
-            total_in_project: all.length,
-            ...(matching.length > shown.length
-              ? {
-                  note:
-                    `${matching.length} checks match; showing ${shown.length}. ` +
-                    'Raise limit, or narrow with tag, slug or status.',
-                }
-              : {}),
+            total_in_project: records.length,
+            ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
           },
           narrowWith: 'Narrow the request with tag, slug or status.',
         });
@@ -190,7 +201,7 @@ export function registerReadTools(
     async ({ check }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const body = (await api.get(`/checks/${id}`)) as Check;
+        const body = await api.get(`/checks/${id}`);
         // The description is free text that reaches this server from whoever
         // edits the project, so it is data rather than instructions.
         return budgetedUntrustedResult(normalizeCheck(body));
@@ -228,17 +239,21 @@ export function registerReadTools(
         const body = await needsReadWriteKey(api, 'list_pings', () =>
           api.get(`/checks/${id}/pings/`)
         );
-        const all = listOf(body, 'pings') as Record<string, unknown>[];
-        const matching = type ? all.filter((ping) => ping.type === type) : all;
+        const { records, skipped } = recordsOf(listOf(body, 'pings'));
+        const matching = type
+          ? records.filter((ping) => ping.type === type)
+          : records;
         const shown = matching.slice(0, limit ?? DEFAULT_LIMIT);
+        const notes = [
+          matching.length > shown.length
+            ? `${matching.length} pings match; showing ${shown.length}.`
+            : undefined,
+          skipped > 0 ? skippedNote(skipped, 'pings') : undefined,
+        ].filter((note): note is string => note !== undefined);
         return budgetedUntrustedList('pings', shown, {
           extra: {
-            returned_by_instance: all.length,
-            ...(matching.length > shown.length
-              ? {
-                  note: `${matching.length} pings match; showing ${shown.length}.`,
-                }
-              : {}),
+            returned_by_instance: records.length,
+            ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
           },
           narrowWith: 'Lower limit, or filter by type.',
         });
@@ -264,6 +279,14 @@ export function registerReadTools(
         ping: z.number().int(),
         body: z.string(),
         empty: z.literal(true).optional(),
+        control_characters_removed: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'How many control characters were removed from the body. Present ' +
+              'only when there were any.'
+          ),
         truncated: z
           .string()
           .optional()
@@ -302,18 +325,27 @@ export function registerReadTools(
           );
         }
         // Whatever pings the check writes this. It is the least trusted content
-        // this server returns.
+        // this server returns — and the one place where a control character is
+        // *plausible*, because a job that prints colour writes escapes. It is
+        // still removed, from both channels: a body is read by a model and
+        // logged by a client, and neither is a terminal that should be
+        // repainted by a monitored host. The count says it happened, so a
+        // reader is not left wondering why the output looks different from
+        // what the job printed.
+        const removed = countControl(raw.body);
+        const body = cleanText(raw.body);
         const note = raw.truncated
           ? `[truncated at ${MAX_PING_BODY_BYTES} bytes. The rest is not ` +
             'retrievable — the API serves a ping body whole or not at all, so ' +
             'there is no follow-up call for the remainder.]'
           : undefined;
         return untrustedTextResult(
-          note === undefined ? raw.body : `${raw.body}\n\n${note}`,
+          note === undefined ? body : `${body}\n\n${note}`,
           {
             check: id,
             ping: n,
-            body: raw.body,
+            body,
+            ...(removed > 0 ? { control_characters_removed: removed } : {}),
             ...(note === undefined ? {} : { truncated: note }),
           }
         );
@@ -353,16 +385,18 @@ export function registerReadTools(
         const body = await api.get(
           `/checks/${id}/flips/${query({ seconds, start, end })}`
         );
-        const all = flipsOf(body);
-        const shown = all.slice(0, limit ?? DEFAULT_LIMIT);
+        const { records, skipped } = recordsOf(flipsOf(body));
+        const shown = records.slice(0, limit ?? DEFAULT_LIMIT);
+        const notes = [
+          records.length > shown.length
+            ? `${records.length} flips returned; showing ${shown.length}.`
+            : undefined,
+          skipped > 0 ? skippedNote(skipped, 'flips') : undefined,
+        ].filter((note): note is string => note !== undefined);
         return budgetedUntrustedList('flips', shown, {
           extra: {
-            returned_by_instance: all.length,
-            ...(all.length > shown.length
-              ? {
-                  note: `${all.length} flips returned; showing ${shown.length}.`,
-                }
-              : {}),
+            returned_by_instance: records.length,
+            ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
           },
           narrowWith: 'Narrow the window with seconds, start or end.',
         });
@@ -386,6 +420,7 @@ export function registerReadTools(
         integrations: z
           .array(record)
           .describe('Each carries the uuid create_check accepts in channels.'),
+        note: z.string().optional(),
       }),
     },
     async () =>
@@ -393,8 +428,11 @@ export function registerReadTools(
         const body = await needsReadWriteKey(api, 'list_integrations', () =>
           api.get('/channels/')
         );
-        const channels = listOf(body, 'channels');
-        return budgetedUntrustedList('integrations', channels, {
+        const { records, skipped } = recordsOf(listOf(body, 'channels'));
+        return budgetedUntrustedList('integrations', records, {
+          ...(skipped > 0
+            ? { extra: { note: skippedNote(skipped, 'integrations') } }
+            : {}),
           narrowWith:
             'The API offers no filter here; the project has that many integrations.',
         });
@@ -418,16 +456,54 @@ export function registerReadTools(
         badges: z
           .record(z.string(), record)
           .describe('Keyed by tag, plus "*" for the project as a whole.'),
+        note: z.string().optional(),
       }),
     },
     async () =>
       run(async () => {
         const body = await api.get('/badges/');
-        const badges =
-          body && typeof body === 'object' && 'badges' in body
-            ? (body as { badges: unknown }).badges
-            : body;
-        return budgetedUntrustedResult({ badges });
+        const envelope = objectOf(body);
+        const document =
+          envelope && 'badges' in envelope ? envelope.badges : body;
+        // Keyed by tag, and a tag is whatever somebody typed — so the document
+        // is read as a record of records rather than cast to one. A `null`
+        // under a tag used to take the whole tool down against its own schema.
+        const source = objectOf(document);
+        const entries = Object.entries(source ?? {});
+        const badges: Record<string, unknown> = {};
+        let skipped = 0;
+        for (const [tag, value] of entries.slice(0, MAX_BADGE_TAGS)) {
+          const set = objectOf(value);
+          if (set === undefined) {
+            skipped++;
+            continue;
+          }
+          // `defineProperty`, because a tag can be spelled `__proto__` and an
+          // assignment would write the prototype and drop the entry.
+          Object.defineProperty(badges, tag, {
+            value: set,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        }
+        const dropped = Math.max(0, entries.length - MAX_BADGE_TAGS);
+        const notes = [
+          source === undefined
+            ? 'The instance did not answer with a badge document. ' +
+              'Something other than Healthchecks may be answering.'
+            : undefined,
+          dropped > 0
+            ? `The project has ${entries.length} tags; the first ` +
+              `${MAX_BADGE_TAGS} are shown. A badge URL is derived from the ` +
+              'tag, so the pattern of the ones shown holds for the rest.'
+            : undefined,
+          skipped > 0 ? skippedNote(skipped, 'badges') : undefined,
+        ].filter((note): note is string => note !== undefined);
+        return budgetedUntrustedResult({
+          badges,
+          ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
+        });
       })
   );
 
@@ -455,6 +531,11 @@ export function registerReadTools(
         instance: z.string(),
         ok: z.boolean().describe('True only when the answer was exactly "OK".'),
         answer: z.string().describe('Up to 4 kB of whatever replied.'),
+        control_characters_removed: z
+          .number()
+          .int()
+          .optional()
+          .describe('Present only when the answer carried any.'),
       }),
     },
     async () =>
@@ -491,10 +572,17 @@ export function registerReadTools(
         // Healthchecks at all: an SSO portal, a captive proxy, a WAF block page.
         // Echoing that into a sentence of the server's own was the one place a
         // stranger's text arrived unlabelled.
+        const removed = countControl(text);
+        const answer = cleanText(text);
         return untrustedTextResult(
           `${api.siteRoot} answered the status endpoint with something other ` +
-            `than "OK":\n\n${text}`,
-          { instance: api.siteRoot, ok: false, answer: text }
+            `than "OK":\n\n${answer}`,
+          {
+            instance: api.siteRoot,
+            ok: false,
+            answer,
+            ...(removed > 0 ? { control_characters_removed: removed } : {}),
+          }
         );
       })
   );
@@ -620,7 +708,13 @@ async function probe(
     return {
       ok: false,
       reachable: false,
-      detail: error instanceof Error ? error.message : String(error),
+      // A message, not a value: a failure here is a DNS error, a TLS error or
+      // this server's own refusal to send a malformed header, and all three are
+      // text that ends up in a tool result.
+      detail: upstreamText(
+        error instanceof Error ? error.message : String(error),
+        300
+      ),
     };
   }
 }

@@ -143,6 +143,15 @@ export async function connect(
     client.connect(clientTransport),
     server.connect(serverTransport),
   ]);
+  // Listed once, on every connection, and that is not a convenience.
+  //
+  // The SDK's client validates `structuredContent` against the tool's declared
+  // output schema — but only for a tool whose schema it has *seen*, which means
+  // only after `tools/list`. Without this call, 262 green tests had never run
+  // that check on a single success path: a closed schema that refuses a field
+  // the handler returns, or a `z.number().int()` the instance breaks with
+  // `1e999`, was invisible here and an error for every real client.
+  await client.listTools();
   return Object.assign(client, { prompts });
 }
 
