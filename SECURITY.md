@@ -52,36 +52,36 @@ off.
 `pause_check` is deliberately **not** guarded: `resume_check` puts it back and
 nothing is lost in between.
 
-### Binding is not freshness
+### Binding, and freshness
 
 `mcp-approval` seals the request state it carries out through the client and back
 (HMAC, via the SDK's `createRequestStateCodec`), and that seal proves **binding**: a
 reply whose state does not open, or opens onto a different resource key, is treated as
-no answer at all. It does not prove **freshness** — nothing in it says an answer has
-not been used before. Within the state's lifetime, a replayed approval for the _same_
-operation on the _same_ check is indistinguishable from the original.
+no answer at all.
 
-For this server that is currently unreachable rather than merely unlikely, and the
-reason is worth writing down because it will change:
+A seal alone does not prove **freshness** — nothing in it says an answer has not been
+used before — so `mcp-approval` 0.8.1 added a nonce to the sealed state and spends it
+on the first answer, accepted or declined. A second presentation of the same state is
+treated as no answer and the person is asked again. This server carries 0.8.2.
 
-- The sealed `requestState` only travels over the wire on protocol revision
-  `2026-07-28`, where the person's answer comes back as `inputResponses` on a retry.
-- The SDK pinned here (`@modelcontextprotocol/server` 2.x) reports
-  `LATEST_PROTOCOL_VERSION = "2025-11-25"` and
-  `SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26",
-"2024-11-05", "2024-10-07"]`. `2026-07-28` is not among them.
-- On a `2025-11-25` connection the SDK bridges the elicitation server-side: the
-  question and the answer never leave the process, so there is no token to replay.
+This section used to say the opposite, and the way it was wrong is worth keeping. It
+argued that the sealed state only crosses the wire on protocol revision `2026-07-28`,
+that `SUPPORTED_PROTOCOL_VERSIONS` does not list it, and that there was therefore
+nothing to replay and nothing to build. That constant is the list of **legacy**
+revisions and never carries the modern one: `serveStdio`, which `src/index.ts` has
+used since 0.3.0, negotiates it separately through `server/discover`. So the era the
+argument ruled out is an era this server serves, and the paragraph stayed true-looking
+through two releases.
 
-The fallback path has an answer of its own regardless: `ConfirmationStore` tokens are
+`test/approval-replay.test.ts` now asks the question directly rather than reading a
+constant next to it: a sealed state is minted, answered once, and presented again — and
+the second presentation comes back as a fresh question. A test of a countermeasure has
+to exercise the countermeasure.
+
+What remains true: the record of spent states is **per process**, so a restart forgets
+it. And the fallback path has an answer of its own: `ConfirmationStore` tokens are
 single-use and spent on consumption, which the integration suite pins by deleting a
 check and then failing to delete it again with the same token.
-
-So there is **no anti-replay mechanism here, deliberately** — building one against a
-path that does not exist would be untestable code guarding nothing. What this section
-is for: when this server starts negotiating `2026-07-28`, the guarantee changes from
-"the answer cannot be replayed" to "the answer cannot be redirected", and
-`delete_check` is the tool that would want the stronger one.
 
 ## Everything the instance says is untrusted input
 
@@ -110,3 +110,40 @@ variants were removed rather than left available, because an unmarked variant ne
 a marked one is something to reach for by accident.
 `test/untrusted.test.ts` asserts this over the whole catalogue: every tool must appear
 in its table, and every tool not explicitly excused must return the marker.
+
+### Marking is not the whole job
+
+A marker tells the model what the text is. It does nothing about a terminal escape in a
+check name repainting the log of whoever reads the client's output, and nothing about a
+lone surrogate — legal JSON, half a character — that makes a Python client raise
+`UnicodeEncodeError` on the way to its own console.
+
+So text is also **cleaned** on the way out, in both channels, by `src/clean.ts`: C0 and
+C1 control characters and DEL are removed (tab, line feed and carriage return stay),
+and lone surrogates become U+FFFD. Format characters — bidi marks, joiners — are kept,
+because they are content in a check named in Arabic or Hindi.
+
+Ping bodies are the interesting case. A job that prints colour writes escape sequences,
+so this is the one place where a control character is _plausible_ — and it is also the
+least controlled text this server touches, written by whatever holds a ping URL. They
+are cleaned too, and `get_ping_body` reports `control_characters_removed` so a reader
+who wonders why the output differs from what the job printed has an answer.
+
+### What the instance sends is not what the schema promises
+
+Every tool declares an `outputSchema`, and the SDK validates `structuredContent`
+against it before the answer leaves. Until this release every response was a TypeScript
+cast, which is not a check — so a `name` the instance sent as a number, an `n_pings` of
+`1e999` (legal JSON, `Infinity` after parsing, refused by zod), or a `null` where a
+check belonged did not spoil one field: it failed the whole call, and a listing lost
+four hundred good checks over one bad one.
+
+`src/boundary.ts` reads every field the schemas name. A field of the wrong type is
+**absent** and the check keeps its row; only a value that is not an object at all
+cannot be shown, and those are counted and reported rather than dropped in silence. A
+`uuid` that is not shaped like one is absent too — it is spliced into request paths and
+quoted into the sentence a person reads before approving a deletion.
+
+`test/boundary.property.test.ts` drives every tool with generated responses and asserts
+that `Output validation error`, `Cannot read properties` and `is not a function` never
+reach the caller.

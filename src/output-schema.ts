@@ -38,10 +38,24 @@ export const truncationNote = z
 /** A record the instance returned, kept as it arrived. */
 export const record = z.looseObject({}).meta({ additionalProperties: true });
 
-/** One check, as `summarizeCheck` projects it for a listing. */
+/**
+ * One check, as `summarizeCheck` projects it for a listing.
+ *
+ * `id` is optional, and that is a statement about the instance rather than a
+ * convenience: an object carrying neither a UUID nor a 40-character
+ * `unique_key` is not addressable, and saying so with an absent field beats
+ * failing the whole listing over the one entry. `id_kind` on the full record
+ * spells out which of the three cases it is.
+ */
 export const checkSummary = z
   .looseObject({
-    id: z.string().describe('uuid or unique_key, depending on the key in use.'),
+    id: z
+      .string()
+      .optional()
+      .describe(
+        'uuid or unique_key, depending on the key in use. Absent when the ' +
+          'instance sent neither in a usable shape.'
+      ),
     name: z.string(),
     slug: z.string(),
     tags: z.array(z.string()),
@@ -69,13 +83,19 @@ export const checkSummary = z
  */
 export const checkRecord = z
   .looseObject({
-    id: z.string(),
+    id: z
+      .string()
+      .optional()
+      .describe('Absent when `id_kind` is "none" — see checkSummary.'),
     id_kind: z.enum(['uuid', 'unique_key', 'none']),
     tags: z.array(z.string()),
     schedule_kind: z.string(),
     name: z.string().optional(),
     desc: z.string().optional().describe('Free text, shortened if oversized.'),
     status: z.string().optional(),
-    channels: z.union([z.array(z.string()), z.string()]).optional(),
+    // A list only. The API stores the integrations comma-delimited and this
+    // server splits them; the union with a raw string used to be how an
+    // instance's own spelling reached the client unshaped.
+    channels: z.array(z.string()).optional(),
   })
   .meta({ additionalProperties: true });

@@ -7,6 +7,8 @@ import {
   ReadWriteKeyRequiredError,
   ResponseTooLargeError,
 } from './api.js';
+import { recordOr } from './boundary.js';
+import { cleanText, cleanValue, upstreamText } from './clean.js';
 
 /**
  * Ceiling on what one tool result may add to the model's context.
@@ -30,7 +32,7 @@ function byteLength(text: string): number {
 }
 
 export function textResult(text: string): CallToolResult {
-  return { content: [{ type: 'text', text }] };
+  return { content: [{ type: 'text', text: cleanText(text) }] };
 }
 
 /**
@@ -49,7 +51,10 @@ export function jsonResult(data: Record<string, unknown>): CallToolResult {
 }
 
 export function errorResult(text: string): CallToolResult {
-  return { content: [{ type: 'text', text }], isError: true };
+  // Cleaned here rather than at each call site: an error message is the one
+  // result shape assembled from whatever went wrong, and half of what can go
+  // wrong is something the instance wrote.
+  return { content: [{ type: 'text', text: cleanText(text) }], isError: true };
 }
 
 const UNTRUSTED_PREAMBLE =
@@ -60,6 +65,12 @@ const UNTRUSTED_PREAMBLE =
  * Marks content that came from the upstream API. Anything a third party could
  * have written — check names, descriptions, and above all logged ping bodies —
  * is data, not instructions, and the model needs to be told so explicitly.
+ *
+ * Marking is not the whole job. The same text is *cleaned* on the way out:
+ * control characters and lone surrogates are removed, in both channels, by
+ * `cleanValue`. A marker tells the model what the text is; it does nothing about
+ * an escape sequence repainting the terminal of whoever reads the client's log,
+ * or about a lone surrogate that makes a Python client raise on encoding.
  */
 export function untrustedResult(data: Record<string, unknown>): CallToolResult {
   // The marker goes in both channels. A client that reads `structuredContent`
@@ -71,7 +82,7 @@ export function untrustedResult(data: Record<string, unknown>): CallToolResult {
   const value = {
     untrusted: true as const,
     source: 'healthchecks' as const,
-    ...rest,
+    ...(cleanValue(rest) as Record<string, unknown>),
   };
   return {
     content: [
@@ -84,18 +95,29 @@ export function untrustedResult(data: Record<string, unknown>): CallToolResult {
   };
 }
 
-/** Untrusted text with no structure of its own — a logged ping body. */
+/**
+ * Untrusted text with no structure of its own — a logged ping body.
+ *
+ * This is the one result shape whose two channels are deliberately *not* the
+ * same document: the text block is the body itself, so a reader sees the job's
+ * output rather than a JSON string of it, while `structuredContent` carries it
+ * as a field beside the check and ping it belongs to. `test/channels.test.ts`
+ * names the two tools that use it, so the "both channels agree" rule stays
+ * enforced for every other tool.
+ */
 export function untrustedTextResult(
   text: string,
   value: Record<string, unknown>
 ): CallToolResult {
   const { untrusted: _untrusted, source: _source, ...rest } = value;
   return {
-    content: [{ type: 'text', text: `${UNTRUSTED_PREAMBLE}${text}` }],
+    content: [
+      { type: 'text', text: `${UNTRUSTED_PREAMBLE}${cleanText(text)}` },
+    ],
     structuredContent: {
       untrusted: true as const,
       source: 'healthchecks' as const,
-      ...rest,
+      ...(cleanValue(rest) as Record<string, unknown>),
     },
   };
 }
@@ -161,7 +183,14 @@ export function budgetedUntrustedList(
     envelope = render(shown);
   }
   if (byteLength(text(envelope)) > MAX_RESULT_BYTES && shown.length === 1) {
-    // A single entry that does not fit cannot be halved any further.
+    // A single entry that does not fit cannot be halved any further — but it
+    // can still be *shortened*, which is what a check with a ten-thousand
+    // character description needs. Only if that fails too is the entry dropped.
+    try {
+      return untrustedResult(budget(envelope));
+    } catch (error) {
+      if (!(error instanceof ResultTooLargeError)) throw error;
+    }
     const empty = render([]);
     const note = (empty.truncated as { note: string }).note.replace(
       'were dropped to stay inside the result size budget.',
@@ -179,60 +208,175 @@ export function budgetedUntrustedList(
  * A check is not a list, so there are no entries to drop — but `desc` is free
  * text of up to ten thousand characters upstream (more on a self-hosted
  * instance), `normalizeCheck` passes through every field the instance chose to
- * add, and none of that is bounded by the input schemas. Long string fields are
- * shortened longest-first until the whole thing fits, each one marked, so the
- * structure survives and the reader can see what was cut.
+ * add, and none of that is bounded by the input schemas. Long strings and long
+ * arrays are shortened longest-first until the whole thing fits, each cut marked
+ * in place, so the structure survives and the reader can see what was lost.
  */
 export function budgetedJson(data: unknown): string {
   return JSON.stringify(budget(data), null, 2);
 }
 
+/** Strings longer than this are candidates for shortening. */
+const LONG_STRING = 200;
+
 /**
- * The same, as a value rather than as text.
+ * Roughly what the note a shortened string ends with costs, so a candidate's
+ * saving can be estimated without rendering it.
+ */
+const STRING_NOTE_BYTES = 40;
+
+/**
+ * Ceiling on how many shrinking rounds {@link budget} may take.
+ *
+ * The loop is supposed to end on its own, and a ceiling that does not depend on
+ * getting the termination proof right is the cheap way to be sure. Reaching it
+ * is not an error; it falls into the same give-up result as running out of
+ * things to cut.
+ */
+const MAX_SHRINK_ROUNDS = 1000;
+
+/**
+ * What one pass over the structure has already cut, by identity.
+ *
+ * By identity, and not by looking at the value. A shortener that recognises its
+ * own mark by the *suffix* of a string skips every value that ends in
+ * `… (N more characters omitted)` — which anybody who can name a check can type,
+ * so the budget could not be met and the tool answered an error for that one
+ * object. Remembering *where* the cut happened, for the duration of one
+ * `budget()` call, takes the value out of the decision entirely.
+ */
+interface Marks {
+  strings: Map<object, Set<string>>;
+  arrays: Map<unknown[], number>;
+}
+
+/** Rough serialized size of an array, without serializing all of it. */
+function estimateArrayBytes(value: unknown[]): number {
+  const sample = value[0];
+  return JSON.stringify(sample ?? '').length * value.length;
+}
+
+interface Candidate {
+  saving: number;
+  shorten: () => void;
+}
+
+/**
+ * Finds every string and array worth shortening and cuts the largest of them
+ * until the estimated saving covers the excess.
+ *
+ * Recursive on purpose. The badge document is keyed by tag and each tag holds
+ * six URLs; a check's oversized field sits under `check` in every write result;
+ * a listing's entries are one level down from the envelope. A pass over the top
+ * level only finds nothing in any of those, gives up on the first iteration, and
+ * throws the whole payload away in favour of an error message.
+ *
+ * Several cuts per round rather than one, because each round ends in a full
+ * `JSON.stringify` of the structure to measure it. One cut per round made the
+ * cost *candidates × size*: two thousand strings of 250 characters cost two
+ * seconds, ten thousand cost sixty-three, on the thread that serves every
+ * request — and then it gave up anyway. Largest first, and the saving is an
+ * estimate, so the measurement afterwards is still what decides.
+ *
+ * Returns false when nothing is left worth shortening.
+ */
+function shortenBy(node: unknown, excess: number, marks: Marks): boolean {
+  const candidates: Candidate[] = [];
+
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      const dropped = marks.arrays.get(value);
+      const entries = dropped === undefined ? value : value.slice(0, -1);
+      if (entries.length > 1) {
+        candidates.push({
+          saving: Math.floor(estimateArrayBytes(entries) / 2),
+          shorten: () => {
+            const keep = Math.floor(entries.length / 2);
+            const total = entries.length - keep + (dropped ?? 0);
+            const kept = entries.slice(0, keep);
+            kept.push(`… (${total} more entries omitted)`);
+            value.length = 0;
+            for (const item of kept) value.push(item);
+            marks.arrays.set(value, total);
+          },
+        });
+      }
+      for (const entry of entries) visit(entry);
+      return;
+    }
+    if (typeof value !== 'object' || value === null) return;
+    const record = value as Record<string, unknown>;
+    const done = marks.strings.get(record);
+    for (const [key, child] of Object.entries(record)) {
+      if (typeof child === 'string') {
+        if (child.length > LONG_STRING && !done?.has(key)) {
+          candidates.push({
+            saving: child.length - LONG_STRING - STRING_NOTE_BYTES,
+            shorten: () => {
+              // `defineProperty` rather than assignment: a key of `__proto__`
+              // is an own property here, and it has to stay one.
+              Object.defineProperty(record, key, {
+                value: `${child.slice(0, LONG_STRING).toWellFormed()}… (${child.length - LONG_STRING} more characters omitted)`,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+              });
+              const set = marks.strings.get(record) ?? new Set<string>();
+              set.add(key);
+              marks.strings.set(record, set);
+            },
+          });
+        }
+        continue;
+      }
+      visit(child);
+    }
+  };
+
+  visit(node);
+  if (candidates.length === 0) return false;
+  candidates.sort((a, b) => b.saving - a.saving);
+  let saved = 0;
+  for (const candidate of candidates) {
+    candidate.shorten();
+    saved += candidate.saving;
+    if (saved >= excess) break;
+  }
+  return true;
+}
+
+/**
+ * The same as {@link budgetedJson}, as a value rather than as text.
  *
  * Every tool declares an `outputSchema` and answers with `structuredContent`
  * beside the text block, and the two have to carry the same thing — so the
  * shortening happens on the object and the serialization is derived from it.
+ *
+ * Anything that is not an object — an empty 200, which `request()` hands over as
+ * `undefined` — is an empty record. It used to reach `Buffer.byteLength` as
+ * `undefined` and answer the tool with Node's `ERR_INVALID_ARG_TYPE`.
  */
 export function budget(data: unknown): Record<string, unknown> {
-  let rendered = JSON.stringify(data, null, 2);
-  if (byteLength(rendered) <= MAX_RESULT_BYTES) {
-    return data as Record<string, unknown>;
-  }
+  const base = recordOr(data);
+  let rendered = JSON.stringify(base, null, 2);
+  if (byteLength(rendered) <= MAX_RESULT_BYTES) return base;
 
-  const copy = structuredClone(data) as Record<string, unknown>;
-  const longestStringKey = (): string | undefined =>
-    Object.entries(copy)
-      .filter(
-        (entry): entry is [string, string] =>
-          typeof entry[1] === 'string' && entry[1].length > 200
-      )
-      .toSorted((a, b) => b[1].length - a[1].length)[0]?.[0];
-
-  for (;;) {
-    const key = longestStringKey();
-    if (key === undefined) break;
-    const value = copy[key] as string;
-    const shortened = `${value.slice(0, 200)}… (${value.length - 200} more characters omitted)`;
-    // Only when it really is shorter. The note explaining the cut is about
-    // thirty characters, so a 210-character value comes back out at 230 — and
-    // since this pass always takes the longest string over the floor, it would
-    // take the one it had just lengthened, again, for ever. The floor of 200 is
-    // not the guarantee it looks like; this comparison is.
-    if (shortened.length >= value.length) break;
-    copy[key] = shortened;
+  const copy = structuredClone(base);
+  const marks: Marks = { strings: new Map(), arrays: new Map() };
+  for (let round = 0; round < MAX_SHRINK_ROUNDS; round++) {
+    const excess = byteLength(rendered) - MAX_RESULT_BYTES;
+    if (!shortenBy(copy, excess, marks)) break;
     rendered = JSON.stringify(copy, null, 2);
     if (byteLength(rendered) <= MAX_RESULT_BYTES) return copy;
   }
 
-  // Nothing string-shaped left to shorten: the object itself is oversized, and
-  // there is no smaller true answer to give. An error rather than an envelope
-  // of a different shape, which the SDK would refuse against the schema the
-  // tool declares.
+  // Nothing left to shorten: the object itself is oversized, and there is no
+  // smaller true answer to give. An error rather than an envelope of a different
+  // shape, which the SDK would refuse against the schema the tool declares.
   throw new ResultTooLargeError(
-    'The response exceeds the result size budget even after shortening its ' +
-      'text fields. This is not a normal Healthchecks object — check what the ' +
-      `instance returned (${byteLength(rendered)} bytes).`
+    'The response exceeds the result size budget even after shortening every ' +
+      'field it contains. This is not a normal Healthchecks object — check ' +
+      `what the instance returned (${byteLength(rendered)} bytes).`
   );
 }
 
@@ -244,25 +388,16 @@ export function budgetedUntrustedResult(data: unknown): CallToolResult {
   return untrustedResult(budget(data));
 }
 
+/** Ceiling on what an upstream error body may add to the model's context. */
 const MAX_ERROR_BODY_LENGTH = 2000;
 
 /**
  * Limits what an upstream error body can inject into the model context: HTML
  * error pages (reverse proxies, WAFs) are dropped entirely, other bodies are
- * truncated.
+ * cleaned of control characters and truncated.
  */
 export function sanitizeErrorBody(body: string): string {
-  const trimmed = body.trim();
-  // Anything markup-shaped: a reverse proxy's error page or a WAF block page.
-  // The check is deliberately loose — an XML declaration, a leading comment or
-  // a doctype followed by a newline are all the same thing here.
-  if (/^(<!doctype|<html[\s>]|<\?xml|<!--)/i.test(trimmed)) {
-    return '(HTML error page omitted)';
-  }
-  if (trimmed.length > MAX_ERROR_BODY_LENGTH) {
-    return `${trimmed.slice(0, MAX_ERROR_BODY_LENGTH)}… (truncated)`;
-  }
-  return trimmed;
+  return upstreamText(body, MAX_ERROR_BODY_LENGTH);
 }
 
 /**
@@ -339,7 +474,15 @@ export async function run(
     ) {
       return errorResult(`healthchecks-mcp: ${error.message}`);
     }
+    // The generic path. Whatever is in here was not written by this server —
+    // a TypeError out of a projection quotes the instance's field name, and
+    // undici's failures quote the value they refused — so it is bounded and
+    // cleaned like any other upstream text.
     const message = error instanceof Error ? error.message : String(error);
-    return errorResult(`healthchecks-mcp: ${message}`);
+    const described =
+      message.trim().length === 0
+        ? `${error instanceof Error ? error.name : 'Error'} without a message`
+        : upstreamText(message, 500);
+    return errorResult(`healthchecks-mcp: ${described}`);
   }
 }

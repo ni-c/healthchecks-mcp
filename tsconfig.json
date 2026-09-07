@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2023",
+    // `toWellFormed` and `isWellFormed` are ES2024. Setting `lib` at all drops
+    // the default DOM library, which is where `RequestInfo` and `Response` come
+    // from — so both are named here rather than left implicit.
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "module": "Node16",
     "moduleResolution": "Node16",
     "outDir": "dist",

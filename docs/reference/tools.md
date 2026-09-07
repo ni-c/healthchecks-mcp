@@ -84,6 +84,9 @@ source address, method and — where one was recorded — duration and `body_url
 The instance caps this at 100 pings on a free plan and 1000 on a paid one, and
 there is no pagination, so older pings cannot be reached at all.
 
+Any entry the instance sends that is not an object is counted in `note` rather
+than shown or silently dropped — the same rule every listing here follows.
+
 ### `get_ping_body` 🔑 🆔
 
 The body a job POSTed with one ping — usually its output, and the fastest way to
@@ -98,6 +101,14 @@ A 404 here means any of four things — no such check, no such ping, the ping
 carried no body, or the ping is older than the instance keeps — and the tool says
 all four rather than passing the number on. A 503 is the object storage being
 briefly unavailable and is worth retrying.
+
+Control characters are removed from the body before it is returned, in both the
+text block and `structuredContent`, and `control_characters_removed` reports how
+many there were. A job that prints colour writes escape sequences, so this is the
+one place where they are plausible — and also the one place where the text is
+written by whatever holds a ping URL, which is every monitored host. The count is
+there so a reader who wonders why the output differs from the job's own console
+has an answer rather than a suspicion.
 
 ### `list_flips`
 
@@ -132,6 +143,12 @@ suffixed `3` report up, late and down separately.
 
 No parameters.
 
+At most 500 tags are returned, with `note` saying how many the project has. The
+document is a record of six URLs per tag, and none of those strings is long
+enough for the result budget to shorten — so without a ceiling here a project
+with thousands of tags got an error instead of a badge. A badge URL is derived
+from its tag, so the pattern of the ones shown holds for the rest.
+
 ### `get_status`
 
 Whether the configured instance is reachable and its database is answering. This
@@ -139,6 +156,12 @@ endpoint needs **no API key**, which makes it the first thing to try when
 something is not working — it separates "wrong key" from "wrong URL".
 
 No parameters.
+
+An answer of exactly `OK` is this server's own sentence about its own
+configuration and carries no untrusted marker. Anything else is up to 4 kB
+written by whatever replied — on the one endpoint that takes no key, which is
+exactly where an SSO portal or a captive proxy answers instead — so it is marked,
+cleaned of control characters, and reported with `control_characters_removed`.
 
 ### `get_api_key_info`
 

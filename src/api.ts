@@ -61,6 +61,67 @@ function formatLimit(bytes: number): string {
     : `${Math.round(bytes / 1024)} KB`;
 }
 
+/** Ceiling on a header value this server is willing to send. */
+const MAX_HEADER_VALUE_LENGTH = 1024;
+
+/**
+ * Refuses a header value the HTTP layer would refuse — before it gets there.
+ *
+ * undici quotes the offending value in its `TypeError`: `Headers.append:
+ * "<value>" is an invalid header value.` For `X-Api-Key` that value *is* the
+ * API key, and the message travels out through `run()`'s generic catch into the
+ * model's context. A key with a line feed in the middle is not exotic — it is
+ * what a wrapped paste, or a `$(cat key)` of a file with a hard-wrapped line,
+ * produces, and the length check that guards the API's 32-character rule counts
+ * it as an ordinary character.
+ *
+ * So the check happens here, and the message names the variable, the position
+ * and the length, and never the value. `loadConfig` refuses the same shapes at
+ * startup; this is the second half, because a `Config` can be built without it —
+ * the tests do exactly that.
+ */
+export function assertHeaderValue(name: string, value: string): void {
+  if (value.length > MAX_HEADER_VALUE_LENGTH) {
+    throw new Error(
+      `the ${name} header would be ${value.length} characters long, above the ` +
+        `${MAX_HEADER_VALUE_LENGTH} this server will send. Check ` +
+        'HEALTHCHECKS_API_KEY.'
+    );
+  }
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x21 || code > 0x7e) {
+      throw new Error(
+        `the ${name} header contains a character outside printable ASCII at ` +
+          `position ${i + 1} of ${value.length}, which the HTTP layer refuses. ` +
+          'Check HEALTHCHECKS_API_KEY — a wrapped paste leaves a line break ' +
+          'inside the value. The value itself is not shown.'
+      );
+    }
+  }
+}
+
+/**
+ * A content type, made safe to quote.
+ *
+ * It is a header the instance chose, and on the one endpoint that takes no key
+ * it may not be the instance at all. Visible ASCII and a short cap; anything
+ * else is described rather than echoed.
+ */
+export function describeContentType(contentType: string): string {
+  if (contentType.length === 0) return 'no content type';
+  const visible = [...contentType]
+    .filter((char) => {
+      const code = char.codePointAt(0) ?? 0;
+      return code >= 0x20 && code <= 0x7e;
+    })
+    .join('');
+  if (visible.length === 0) return 'a content type of unprintable characters';
+  return visible.length > 100
+    ? `a ${contentType.length}-character content type`
+    : `"${visible}"`;
+}
+
 /**
  * Thrown when an endpoint that only reads was refused for needing a read-write key.
  *
@@ -88,7 +149,7 @@ export class ReadWriteKeyRequiredError extends Error {
 export class UnexpectedContentTypeError extends Error {
   constructor(path: string, contentType: string) {
     super(
-      `Healthchecks answered ${path} with "${contentType || 'no content type'}" ` +
+      `Healthchecks answered ${path} with ${describeContentType(contentType)} ` +
         'instead of JSON. A 200 that is not JSON usually means something in front ' +
         'of the instance answered instead of the API — an SSO portal, a captive ' +
         'proxy or a login page. Check HEALTHCHECKS_URL and try get_status.'
@@ -161,6 +222,10 @@ export class HealthchecksApi {
     if (!options.anonymous && this.config.apiKey) {
       // The header, never the `api_key` body field the API also accepts: a body
       // field ends up in request logs, and it only works for POST anyway.
+      //
+      // Checked before it is set, so undici never gets to quote the key back at
+      // us in a TypeError that ends up in the model's context.
+      assertHeaderValue('X-Api-Key', this.config.apiKey);
       headers['X-Api-Key'] = this.config.apiKey;
     }
 
@@ -189,6 +254,18 @@ export class HealthchecksApi {
         } as UndiciRequestInit)
       : await fetch(url, init);
 
+    // The status is decided before the body is read, and that order is the
+    // whole point. Reading first meant a 401 whose body was a two-megabyte
+    // login page — which is what a reverse proxy or an SSO portal answers —
+    // surfaced as "the response exceeds the 5 MB ceiling": the size, not the
+    // status, and no hint about the credential. An error body gets its own
+    // small ceiling that cuts instead of refusing, so the sentence the instance
+    // wrote always survives.
+    if (!response.ok) {
+      const errorBody = await readErrorBody(response as unknown as Response);
+      throw new HealthchecksApiError(response.status, errorBody, method, path);
+    }
+
     const limit = options.maxBytes ?? MAX_RESPONSE_BYTES;
     // A raw caller wants text and can live with less of it; a JSON caller
     // cannot, because half a document is not a smaller answer.
@@ -199,9 +276,6 @@ export class HealthchecksApi {
       options.raw === true
     );
 
-    if (!response.ok) {
-      throw new HealthchecksApiError(response.status, text, method, path);
-    }
     if (truncated && !options.raw) {
       throw new ResponseTooLargeError(path, limit);
     }
@@ -250,6 +324,43 @@ export class HealthchecksApi {
 
   delete(path: string): Promise<unknown> {
     return this.request('DELETE', path);
+  }
+}
+
+/** Ceiling on the body of a failed response. It cuts; it never refuses. */
+export const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
+/**
+ * Reads the body of a non-2xx response.
+ *
+ * Deliberately different from {@link readCapped} in the one way that matters: it
+ * cannot throw. The status is already the answer, and an error while reading the
+ * explanation must not replace it — that is how a 401 became a size complaint.
+ * Whatever cannot be read comes back as the empty string, and the caller still
+ * has the status.
+ */
+async function readErrorBody(response: Response): Promise<string> {
+  try {
+    const stream = response.body;
+    if (!stream) return '';
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      if (total + value.byteLength > MAX_ERROR_BODY_BYTES) {
+        chunks.push(value.subarray(0, MAX_ERROR_BODY_BYTES - total));
+        await reader.cancel();
+        break;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } catch {
+    return '';
   }
 }
 

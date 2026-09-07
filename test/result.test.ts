@@ -119,16 +119,39 @@ describe('budgetedUntrustedList', () => {
     expect(parsed.truncated?.note).toContain('Use tag or slug.');
   });
 
-  it('stays parseable even when a single entry is too big for the budget', () => {
+  it('shortens a single oversized entry rather than dropping it', () => {
+    // Halving cannot help with one entry, but shortening can, and a check with
+    // a ten-thousand-character description is an ordinary check. Dropping it
+    // answered "1 of 1 entries were dropped" for a listing whose whole content
+    // was that one check.
+    const rendered = textOf(
+      budgetedUntrustedList('checks', [
+        { filler: 'z'.repeat(MAX_RESULT_BYTES + 10) },
+      ])
+    );
+    const parsed = jsonAfterMarker(rendered);
+    expect(Buffer.byteLength(rendered, 'utf8')).toBeLessThanOrEqual(
+      MAX_RESULT_BYTES
+    );
+    expect(parsed.checks).toHaveLength(1);
+    const first = parsed.checks[0] as Record<string, unknown> | undefined;
+    expect(String(first?.filler)).toContain('more characters omitted');
+  });
+
+  it('drops the entry when even shortening cannot make it fit', () => {
+    // The give-up path is still there: an entry made of thousands of *short*
+    // strings has nothing to shorten — every one of them is under the floor —
+    // so there is no smaller true answer and the truncation block says so.
+    const entry: Record<string, string> = {};
+    for (let i = 0; i < 6000; i++) entry[`field_${i}`] = 'x'.repeat(20);
     const parsed = jsonAfterMarker(
-      textOf(
-        budgetedUntrustedList('checks', [
-          { filler: 'z'.repeat(MAX_RESULT_BYTES + 10) },
-        ])
-      )
+      textOf(budgetedUntrustedList('checks', [entry]))
     );
     expect(parsed.checks).toEqual([]);
     expect(parsed.truncated?.total).toBe(1);
+    expect(parsed.truncated?.note).toContain(
+      'even a single entry exceeds the result size budget'
+    );
   });
 
   it('keeps the extra fields the caller passed', () => {

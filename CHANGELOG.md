@@ -40,6 +40,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **mcp-approval 0.8.2.** A sealed dialog answer is single-use since 0.8.1: the same `requestState` presented again within its lifetime used to be accepted again, and with a resource key that is the same every time — a whole stream, a fixed set of targets — every replay landed. npm users on `^0.8.0` already had the fix; the Docker image is built from the lockfile and carried 0.8.0 until this release.
 
+- **Every response from the instance is read through a boundary instead of being cast.** A `name` the instance sent as a number, an `n_pings` of `1e999` (legal JSON, `Infinity` after parsing, refused by zod), a `grace` of `null`, a `null` where a check belonged: each of these did not spoil one field, it failed the whole call — the SDK validates `structuredContent` against the declared output schema, so a listing lost four hundred good checks over one bad one, and `get_check` on a body of `null` answered `Cannot read properties of null`. Every field the schemas name now goes through `src/boundary.ts`: the wrong type is **absent** and the check keeps its row, while an entry that is not an object at all is counted in `note` rather than dropped in silence. A `uuid` that is not shaped like one is absent too — it is spliced into request paths and quoted into the sentence a person reads before approving a deletion.
+
+- **The API key can no longer be quoted back by the HTTP layer.** A 32-character key with a line break inside it — a wrapped paste — passed the length check, reached undici, and came back as `Headers.append: "<the key>" is an invalid header value.` through the generic error path into the model's context. The key is trimmed and shape-checked at startup and again before every request; the message names the variable, the position and the length, and never the value.
+
+- **Control characters and lone surrogates are removed from everything the instance wrote.** A marker says what the text is; it does nothing about an escape sequence repainting the log of whoever reads the client's output, or about a lone surrogate that makes a Python client raise on encoding. Both channels are cleaned by `src/clean.ts`, format characters are kept because they are content in a name, and `get_ping_body` and `get_status` report `control_characters_removed` — a job that prints colour is the one plausible source, and also the least controlled text this server touches.
+
+- **The status of a failed request is decided before its body is read.** A 401 answered with a two-megabyte login page — what a reverse proxy or an SSO portal sends — surfaced as "the response exceeds the 5 MB ceiling": the size, not the status, and no hint about the credential. Error bodies now have their own 64 KiB ceiling that cuts instead of refusing.
+
+- **`npm ci --ignore-scripts` in the release job**, which holds `id-token: write` for npm Trusted Publishing and until now let every dependency's install hook run while an OIDC token was available. `gh release create` gained `--verify-tag`, and pull requests gained `actions/dependency-review-action`.
+
+### Fixed
+
+- The result budget cuts many candidates per round instead of one, and descends into nested objects. Twenty thousand fields cost 63 seconds to give up on; they now cost 23 milliseconds. A long description under `check` — which is where every write tool puts one — was never reached at all, so the tool threw instead of shortening it. `list_badges` answers a project with thousands of tags by showing the first 500 and saying so; the document is six short URLs per tag, which nothing in the budget can shrink.
+
+- Trailing slashes in `HEALTHCHECKS_URL` are trimmed by walking an index rather than with `/\/+$/`, which is quadratic and cost 1.8 seconds on 80 000 of them.
+
+- Startup diagnostics describe what they cannot quote. A 56-character hexadecimal key with a colon after it is a valid URL whose _scheme_ is the key, so `(got ${protocol})` printed a credential; `ELICITATION` is unprefixed and sits in the same block of every compose file as the key, and printed its value in full.
+
+- `delete_check` names the check the caller asked about and the dialog announced, rather than the identifier the instance echoed back.
+
+- `list_integrations` declares the `note` field it can return. Its output schema is closed, so a client that had loaded `tools/list` refused the whole result — which nothing noticed, because the test harness never listed tools. It does now, on every connection, so every success path runs the client-side schema check.
+
+- The runtime image no longer ships yarn, corepack or a lockfile nothing reads.
+
 ## [0.2.0] - 2026-09-03
 
 ### Added

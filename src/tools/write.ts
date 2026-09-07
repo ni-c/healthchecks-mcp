@@ -20,7 +20,7 @@ import {
 } from '../schema.js';
 
 import { assertPathSegment, type HealthchecksApi } from '../api.js';
-import { checkIdOf, normalizeCheck, type Check } from '../check.js';
+import { normalizeCheck } from '../check.js';
 import { budgetedUntrustedResult, errorResult, run } from '../result.js';
 import { checkRecord, untrustedFields } from '../output-schema.js';
 
@@ -214,7 +214,7 @@ export function registerWriteTools(
         const body = buildBody(input, appliedChannels);
         if (unique !== undefined) body.unique = unique;
 
-        const created = (await api.post('/checks/', body)) as Check;
+        const created = await api.post('/checks/', body);
         return budgetedUntrustedResult({
           check: normalizeCheck(created),
           channels_applied:
@@ -273,7 +273,7 @@ export function registerWriteTools(
           );
         }
 
-        const updated = (await api.post(`/checks/${id}`, body)) as Check;
+        const updated = await api.post(`/checks/${id}`, body);
         return budgetedUntrustedResult({
           check: normalizeCheck(updated),
           ...(channels !== undefined
@@ -318,7 +318,7 @@ export function registerWriteTools(
     async ({ check }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const paused = (await api.post(`/checks/${id}/pause`)) as Check;
+        const paused = await api.post(`/checks/${id}/pause`);
         return budgetedUntrustedResult({
           check: normalizeCheck(paused),
           note: 'Alerting is off for this check until resume_check is called.',
@@ -349,7 +349,7 @@ export function registerWriteTools(
     async ({ check }) =>
       run(async () => {
         const id = assertPathSegment(check, 'check id');
-        const resumed = (await api.post(`/checks/${id}/resume`)) as Check;
+        const resumed = await api.post(`/checks/${id}/resume`);
         return budgetedUntrustedResult({ check: normalizeCheck(resumed) });
       })
   );
@@ -408,10 +408,14 @@ export function registerWriteTools(
 
         // The API returns the deleted object — the last chance to keep a record
         // of what it was.
-        const deleted = (await api.delete(`/checks/${id}`)) as Check;
+        const deleted = await api.delete(`/checks/${id}`);
         return budgetedUntrustedResult({
           deleted: normalizeCheck(deleted),
-          note: `Check ${checkIdOf(deleted) ?? id} is gone. This cannot be undone.`,
+          // The id the call was made with and the dialog named, not the one the
+          // instance echoed back. The two are the same on any working instance,
+          // and when they are not, the sentence a person reads after approving
+          // a deletion should be about the check they approved.
+          note: `Check ${id} is gone. This cannot be undone.`,
         });
       })
   );
