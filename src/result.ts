@@ -207,7 +207,7 @@ export function budget(data: unknown): Record<string, unknown> {
         (entry): entry is [string, string] =>
           typeof entry[1] === 'string' && entry[1].length > 200
       )
-      .sort((a, b) => b[1].length - a[1].length)[0]?.[0];
+      .toSorted((a, b) => b[1].length - a[1].length)[0]?.[0];
 
   for (;;) {
     const key = longestStringKey();

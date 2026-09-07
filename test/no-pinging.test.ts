@@ -43,7 +43,7 @@ afterEach(() => {
 
 describe('nothing here can ping a check', () => {
   it('covers every tool in the catalogue', () => {
-    expect(Object.keys(CALLS).sort()).toEqual([...ALL_TOOLS].sort());
+    expect(Object.keys(CALLS).toSorted()).toEqual(ALL_TOOLS.toSorted());
   });
 
   it('sends every request under /api/v3 and nowhere else', async () => {
