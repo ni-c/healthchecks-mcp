@@ -292,6 +292,11 @@ export function readOnlyCheckFixture(overrides: Partial<Check> = {}): Check {
   return check;
 }
 
+/** Where the upstream serves the body of ping `n` of the fixture check. */
+function pingBodyUrl(n: number): string {
+  return `${API}/checks/${CHECK_UUID}/pings/${n}/body`;
+}
+
 /**
  * Real pings, newest first, as `GET /checks/<uuid>/pings/` returns them.
  *
@@ -301,7 +306,6 @@ export function readOnlyCheckFixture(overrides: Partial<Check> = {}): Check {
  * `/start`, which is why `checkFixture` does not carry it.
  */
 export function pingsFixture(): Record<string, unknown>[] {
-  const bodyUrl = (n: number) => `${API}/checks/${CHECK_UUID}/pings/${n}/body`;
   const base = {
     scheme: 'http',
     remote_addr: '203.0.113.10',
@@ -315,7 +319,7 @@ export function pingsFixture(): Record<string, unknown>[] {
       date: '2026-08-27T09:39:21.987390+00:00',
       n: 7,
       ...base,
-      body_url: bodyUrl(7),
+      body_url: pingBodyUrl(7),
     },
     {
       type: 'success',
@@ -329,35 +333,35 @@ export function pingsFixture(): Record<string, unknown>[] {
       date: '2026-08-27T09:39:21.955001+00:00',
       n: 5,
       ...base,
-      body_url: bodyUrl(5),
+      body_url: pingBodyUrl(5),
     },
     {
       type: 'fail',
       date: '2026-08-27T09:39:21.944072+00:00',
       n: 4,
       ...base,
-      body_url: bodyUrl(4),
+      body_url: pingBodyUrl(4),
     },
     {
       type: 'log',
       date: '2026-08-27T09:39:21.933145+00:00',
       n: 3,
       ...base,
-      body_url: bodyUrl(3),
+      body_url: pingBodyUrl(3),
     },
     {
       type: 'success',
       date: '2026-08-27T09:39:21.921730+00:00',
       n: 2,
       ...base,
-      body_url: bodyUrl(2),
+      body_url: pingBodyUrl(2),
     },
     {
       type: 'start',
       date: '2026-08-27T09:39:20.901544+00:00',
       n: 1,
       ...base,
-      body_url: bodyUrl(1),
+      body_url: pingBodyUrl(1),
     },
   ];
 }
