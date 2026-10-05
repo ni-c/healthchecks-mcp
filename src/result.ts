@@ -31,6 +31,13 @@ function byteLength(text: string): number {
   return Buffer.byteLength(text, 'utf8');
 }
 
+/** Size of a marked result envelope, preamble included, measured as it will be sent. */
+function markedEnvelopeBytes(envelope: Record<string, unknown>): number {
+  return byteLength(
+    `${UNTRUSTED_PREAMBLE}${JSON.stringify(envelope, null, 2)}`
+  );
+}
+
 export function textResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text: cleanText(text) }] };
 }
@@ -173,16 +180,13 @@ export function budgetedUntrustedList(
     Object.assign(envelope, options.extra ?? {});
     return envelope;
   };
-  const text = (envelope: Record<string, unknown>): string =>
-    `${UNTRUSTED_PREAMBLE}${JSON.stringify(envelope, null, 2)}`;
-
   let shown = items;
   let envelope = render(shown);
-  while (byteLength(text(envelope)) > MAX_RESULT_BYTES && shown.length > 1) {
+  while (markedEnvelopeBytes(envelope) > MAX_RESULT_BYTES && shown.length > 1) {
     shown = shown.slice(0, Math.floor(shown.length / 2));
     envelope = render(shown);
   }
-  if (byteLength(text(envelope)) > MAX_RESULT_BYTES && shown.length === 1) {
+  if (markedEnvelopeBytes(envelope) > MAX_RESULT_BYTES && shown.length === 1) {
     // A single entry that does not fit cannot be halved any further — but it
     // can still be *shortened*, which is what a check with a ten-thousand
     // character description needs. Only if that fails too is the entry dropped.
