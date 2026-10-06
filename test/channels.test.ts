@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CALLS } from './calls.js';
-import { call, connect, stubFetch, textOf, tokenOf } from './harness.js';
+import {
+  CHECK_UUID,
+  call,
+  connect,
+  stubFetch,
+  textOf,
+  tokenOf,
+} from './harness.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -70,6 +77,32 @@ describe('both result channels carry the same document', () => {
       expect(structuredHalf(textOf(result))).toEqual(result.structuredContent);
     });
   }
+
+  it('answers the same in both channels when the instance sends __proto__', async () => {
+    stubFetch({
+      [`GET /checks/${CHECK_UUID}`]: {
+        text: '{"__proto__": false, "name": "nightly", "tags": "a", "channels": {"__proto__": 1, "x": [{"__proto__": 2, "y": 3}]}}',
+        contentType: 'application/json',
+      },
+      'GET /badges/': {
+        text: '{"badges":{"__proto__":{"svg":"x"},"prod":{"svg":"y"}}}',
+        contentType: 'application/json',
+      },
+    });
+    const client = await connect();
+    for (const [name, args] of [
+      ['get_check', { check: CHECK_UUID }],
+      ['list_badges', {}],
+    ] as const) {
+      const result = await call(client, name, args);
+      expect(result.isError).not.toBe(true);
+      const text = textOf(result);
+      expect(text).not.toContain('__proto__');
+      expect(structuredHalf(text)).toEqual(
+        JSON.parse(JSON.stringify(result.structuredContent))
+      );
+    }
+  });
 
   it('get_ping_body is an exception on purpose: the body is the text block', async () => {
     const spec = CALLS.get_ping_body;

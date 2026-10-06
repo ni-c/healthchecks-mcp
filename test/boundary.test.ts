@@ -252,7 +252,7 @@ describe('the badge document', () => {
     expect(jsonOf(result).badges).toEqual({});
   });
 
-  it('keeps a tag spelled __proto__ as an own property', async () => {
+  it('drops a tag spelled __proto__ and keeps the others', async () => {
     stubFetch({
       'GET /badges/': {
         text: '{"badges":{"__proto__":{"svg":"x"},"prod":{"svg":"y"}}}',
@@ -261,10 +261,8 @@ describe('the badge document', () => {
     });
     const parsed = jsonOf(await call(await connect(), 'list_badges'));
     const badges = parsed.badges as Record<string, unknown>;
-    // A tag is whatever somebody typed, and `badges[tag] = value` would have
-    // written the prototype and dropped the entry with no error anywhere.
-    expect(Object.hasOwn(badges, '__proto__')).toBe(true);
-    expect(Object.keys(badges).toSorted()).toEqual(['__proto__', 'prod']);
+    expect(Object.hasOwn(badges, '__proto__')).toBe(false);
+    expect(Object.keys(badges)).toEqual(['prod']);
   });
 });
 
