@@ -65,15 +65,23 @@ describe('cleanValue', () => {
     expect(value.tag?.list[0]).toBe('ab');
   });
 
-  it('keeps a __proto__ key as an own property', () => {
-    // An own property after JSON.parse, and legal JSON from any instance. Built
-    // with `out[key] = …` it would set the prototype and vanish without error.
+  it('drops a __proto__ key at every depth and nothing else', () => {
     const cleaned = cleanValue(
-      JSON.parse('{"__proto__": {"polluted": true}, "name": "x"}')
+      JSON.parse(
+        `{"__proto__": "x", "a": [1, "b", null, {"__proto__": {"p": 1}, "q": 2}], "n": 1, "__pro\\u0000to__": false}`
+      )
     ) as Record<string, unknown>;
-    expect(Object.hasOwn(cleaned, '__proto__')).toBe(true);
+    expect(Object.hasOwn(cleaned, '__proto__')).toBe(false);
     expect(Object.getPrototypeOf(cleaned)).toBe(Object.prototype);
-    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.entries(cleaned)).toEqual([
+      ['a', [1, 'b', null, { q: 2 }]],
+      ['n', 1],
+    ]);
+    const nested = (cleaned.a as unknown[])[3] as object;
+    expect(Object.getPrototypeOf(nested)).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>).p).toBeUndefined();
+    expect(cleanValue({})).toEqual({});
+    expect(cleanValue(JSON.parse('{"__proto__": null}'))).toEqual({});
   });
 
   it('passes numbers, booleans and null through untouched', () => {
