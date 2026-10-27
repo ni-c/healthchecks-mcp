@@ -15,7 +15,7 @@ services:
     # the login form then answers "Incorrect" for an account that was never
     # made. Healthchecks is a Django application and `manage.py` is its only
     # headless way in, so the account, the project and both API keys are
-    # created here, before uwsgi starts. Doing it here rather than with
+    # created here, before the web server starts. Doing it here rather than with
     # `docker compose exec` from the test keeps the bootstrap free of the
     # docker CLI, and keeps "how this instance came to exist" in one file.
     entrypoint: ['/bin/sh', '-c']
@@ -41,6 +41,11 @@ services:
         p.save()
         print('project', p.code, 'rw', p.api_key, 'ro', p.api_key_readonly)
         "
+        # v5.0 replaced uwsgi with gunicorn and ships run.sh as the entry
+        # point; v4.x has neither run.sh nor gunicorn. The weekly run tests
+        # :latest while the PR gate stays on the pinned v4.4, so both forms
+        # have to start.
+        if [ -x ./run.sh ]; then exec ./run.sh; fi
         exec uwsgi /opt/healthchecks/docker/uwsgi.ini
     environment:
       SITE_ROOT: http://127.0.0.1:8000
@@ -70,7 +75,7 @@ services:
     # Only the schedule is wrong upstream, not the check: `retries: 1` on a
     # 60-second interval means a single miss marks the container unhealthy, and
     # this one spends its first minute running `manage.py migrate` and the
-    # seeding above before uwsgi is started at all. `up --wait` against that
+    # seeding above before the web server is started at all. `up --wait` against that
     # gives up while the container is still coming up correctly.
     #
     # `./fetchstatus.py` rather than a curl or wget one-liner: the image has
