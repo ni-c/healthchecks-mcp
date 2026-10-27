@@ -8,7 +8,7 @@ import { assertLoopback, waitForHttp } from 'mcp-integration-harness';
  * examples and create nothing, so the login form answers "Incorrect" for an
  * account that was never made — and Healthchecks' only headless way in is
  * `manage.py`. The account, the project and both keys are therefore created by
- * the container before uwsgi starts.
+ * the container before the web server starts.
  *
  * **Both keys, on purpose.** Healthchecks gives a read-only key a real
  * read-only view rather than a partial one: three tools answer 401 with it,
@@ -52,7 +52,7 @@ export async function bootstrap(
     throw new Error(
       `Healthchecks did not accept the seeded API key (HTTP ${probe.status}). ` +
         'The account, project and keys are created by the container command in ' +
-        'compose.yml before uwsgi starts — `docker compose logs` shows the ' +
+        'compose.yml before the web server starts — `docker compose logs` shows the ' +
         'line it prints.'
     );
   }
