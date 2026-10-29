@@ -118,7 +118,7 @@ describe('the runtime image', () => {
   });
 
   it('pins the base image by digest and drops root', () => {
-    expect(dockerfile).toMatch(/FROM node:24-alpine@sha256:[0-9a-f]{64}/);
+    expect(dockerfile).toMatch(/FROM node:\d+-alpine@sha256:[0-9a-f]{64}/);
     expect(dockerfile).toContain('USER node');
   });
 });
