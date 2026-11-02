@@ -64,7 +64,7 @@ check that alerts nobody.
 
 ## Requirements
 
-- Node.js ≥ 22
+- Node.js ≥ 24
 - A **Healthchecks** project API key — Project Settings → API Access. Keys are per
   project, not per account, and are exactly 32 characters long.
 
