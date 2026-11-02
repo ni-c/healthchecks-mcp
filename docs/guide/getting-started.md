@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js ≥ 22
+- Node.js ≥ 24
 - A Healthchecks project and an API key for it. On the hosted service that is
   Project Settings → API Access; on a self-hosted instance the same page.
 - Nothing else. There is no database, no state directory and no port.
